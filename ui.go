@@ -193,7 +193,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		if !m.paused {
 			m.agg.SetDropped(m.cap.Dropped())
-			m.snap = m.agg.Snapshot(m.snapOpts())
+			m.agg.SnapshotInto(&m.snap, m.snapOpts())
 			m.updateRates(time.Time(msg))
 			if m.view == viewMap {
 				m.tv = m.topo.View(m.iface, true)
@@ -201,10 +201,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.observeDevices(time.Time(msg))
 			m.rebuild()
 		}
+		if m.view == viewMap && !m.animOn && m.flowing() {
+			m.animOn = true
+			return m, tea.Batch(tick(), animTick())
+		}
 		return m, tick()
 	case animMsg:
-		if m.view != viewMap {
-			m.animOn = false
+		if m.view != viewMap || !m.flowing() {
+			m.animOn = false // the next tick restarts it when traffic resumes
 			return m, nil
 		}
 		m.phase++
@@ -377,12 +381,12 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.paused = !m.paused
 	case "r":
 		m.agg.Reset()
-		m.snap = m.agg.Snapshot(m.snapOpts())
+		m.agg.SnapshotInto(&m.snap, m.snapOpts())
 		m.res.ResetCountries()
 		m.cursor, m.offset = 0, 0
 	}
 	m.rebuild()
-	if m.view == viewMap && !m.animOn {
+	if m.view == viewMap && !m.animOn && m.flowing() {
 		m.animOn = true
 		return m, animTick()
 	}
@@ -391,14 +395,14 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // snapOpts asks the aggregator for only what the current view shows.
 func (m *model) snapOpts() SnapOpts {
-	return SnapOpts{Packets: m.view == viewPackets, DNS: m.view == viewDNS}
+	return SnapOpts{Packets: m.view == viewPackets, DNS: m.view == viewDNS, LAN: m.view == viewMap || m.observeDue(time.Now())}
 }
 
 func (m *model) setView(v view) {
 	m.view = v
 	m.cursor, m.offset = 0, 0
 	if v == viewPackets || v == viewDNS {
-		m.snap = m.agg.Snapshot(m.snapOpts()) // fill the view now instead of on the next tick
+		m.agg.SnapshotInto(&m.snap, m.snapOpts()) // fill the view now instead of on the next tick
 	}
 	if v == viewMap {
 		m.tv = m.topo.View(m.iface, true)
@@ -466,7 +470,7 @@ func (m *model) openDecode() {
 	}
 	p := m.pkts[m.cursor]
 	title := fmt.Sprintf("Packet %s  %s %s → %s  %d bytes", p.Time.Format("15:04:05.000"), p.Proto, addrPort(p.Src, p.SPort), addrPort(p.Dst, p.DPort), p.Len)
-	m.overlay = &overlay{title: title, lines: decodeTree(p.Raw, m.linkType)}
+	m.overlay = &overlay{title: title, lines: decodeTree(m.agg.Raw(p.ID), m.linkType)}
 }
 
 func (m *model) openTimeline() {
@@ -1463,8 +1467,18 @@ func (m *model) moveMapSelSide(dir int) {
 
 // observeDevices records LAN devices in the device book every few seconds,
 // whichever view is open, and announces ones never seen before.
+// flowing reports traffic in the last complete second, which the map animates.
+func (m *model) flowing() bool {
+	b := m.lastBucket()
+	return b.In+b.Out > 0
+}
+
+func (m *model) observeDue(now time.Time) bool {
+	return m.book != nil && now.Sub(m.observed) >= 5*time.Second
+}
+
 func (m *model) observeDevices(now time.Time) {
-	if m.book == nil || now.Sub(m.observed) < 5*time.Second {
+	if !m.observeDue(now) {
 		return
 	}
 	m.observed = now

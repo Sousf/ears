@@ -51,9 +51,11 @@ type Agg struct {
 	hostCopies map[netip.Addr]Host // last deep copy handed to Snapshot, reused while unchanged
 	lastPrune  time.Time
 
-	recent []Packet // ring buffer of the newest packets
-	head   int
-	n      int
+	recent    []Packet // ring buffer of the newest packets, slot = ID % recentCap
+	raw       [][]byte // bytes of each ring slot, allocated once and reused
+	nextID    uint64
+	n         int
+	dnsCopies map[string]DNSEntry // like hostCopies, for the DNS log
 
 	secs    [bucketCap]Bucket
 	notices []Notice
@@ -65,7 +67,8 @@ type Agg struct {
 }
 
 func NewAgg(onNew func(netip.Addr)) *Agg {
-	a := &Agg{local: map[netip.Addr]bool{}, bcast: map[netip.Addr]bool{}, onNew: onNew, recent: make([]Packet, recentCap)}
+	a := &Agg{local: map[netip.Addr]bool{}, bcast: map[netip.Addr]bool{}, onNew: onNew,
+		recent: make([]Packet, recentCap), raw: make([][]byte, recentCap)}
 	a.clear()
 	a.loadLocalAddrs()
 	return a
@@ -81,8 +84,9 @@ func (a *Agg) clear() {
 	a.macs = map[string]*MacInfo{}
 	a.dns = map[string]*DNSEntry{}
 	a.hostCopies = map[netip.Addr]Host{}
+	a.dnsCopies = map[string]DNSEntry{}
 	clear(a.recent)
-	a.head, a.n = 0, 0
+	a.n = 0
 	a.secs = [bucketCap]Bucket{}
 	a.notices = nil
 	a.stats = Stats{Start: time.Now()}
@@ -314,12 +318,28 @@ func (a *Agg) add(p Packet) (newRemote netip.Addr) {
 		f.Events = append(f.Events, ev)
 	}
 
-	a.recent[a.head] = p
-	a.head = (a.head + 1) % recentCap
-	if a.n < recentCap {
-		a.n++
+	slot := a.nextID % recentCap
+	p.ID = a.nextID
+	a.nextID++
+	if a.raw[slot] == nil {
+		a.raw[slot] = make([]byte, 0, rawCap)
 	}
+	a.raw[slot] = append(a.raw[slot][:0], p.Raw[:min(len(p.Raw), rawCap)]...)
+	p.Raw = nil // the capture buffer is reused after Add returns
+	a.recent[slot] = p
+	a.n = min(a.n+1, recentCap)
 	return newRemote
+}
+
+// Raw returns a copy of a recent packet's bytes, or nil once the ring has
+// moved past it.
+func (a *Agg) Raw(id uint64) []byte {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if id >= a.nextID || a.nextID-id > uint64(a.n) {
+		return nil
+	}
+	return slices.Clone(a.raw[id%recentCap])
 }
 
 // logDNS records a lookup or its answer, and learns address -> name pairs so
@@ -350,6 +370,7 @@ func (a *Agg) logDNS(p Packet, stub bool) {
 		a.dns[d.Name] = e
 	}
 	e.Last = p.Time
+	e.gen++
 	if !d.Reply {
 		e.Count++
 		e.Types = addUnique(e.Types, d.Type)
@@ -388,6 +409,7 @@ func (a *Agg) evictOldestDNS() {
 	}
 	if oldest != nil {
 		delete(a.dns, oldest.Name)
+		delete(a.dnsCopies, oldest.Name)
 	}
 }
 
@@ -422,6 +444,11 @@ func (a *Agg) prune(now time.Time) {
 	for name, e := range a.dns {
 		if now.Sub(e.Last) > nameTTL {
 			delete(a.dns, name)
+		}
+	}
+	for name := range a.dnsCopies {
+		if a.dns[name] == nil {
+			delete(a.dnsCopies, name)
 		}
 	}
 	for mac, mi := range a.macs {
@@ -580,12 +607,12 @@ func (a *Agg) Reset() {
 type Snapshot struct {
 	Flows    []Flow
 	Hosts    []Host
-	Packets  []Packet   // newest first; only with SnapOpts.Packets
+	Packets  []Packet   // newest first, without bytes (see Agg.Raw); only with SnapOpts.Packets
 	DNS      []DNSEntry // only with SnapOpts.DNS
 	StubDNS  bool
-	Buckets  []Bucket // last 60 seconds, oldest first
-	Notices  []Notice // newest first
-	Macs     []MacInfo
+	Buckets  []Bucket  // last 60 seconds, oldest first
+	Notices  []Notice  // newest first
+	Macs     []MacInfo // only with SnapOpts.LAN
 	LANNames map[netip.Addr]string
 	Stats    Stats
 }
@@ -595,19 +622,29 @@ type Snapshot struct {
 type SnapOpts struct {
 	Packets bool
 	DNS     bool
+	LAN     bool // MAC records and mDNS names, for the map and device tracking
 }
 
+// Snapshot returns a fresh copy of the current state.
 func (a *Agg) Snapshot(o SnapOpts) Snapshot {
+	var s Snapshot
+	a.SnapshotInto(&s, o)
+	return s
+}
+
+// SnapshotInto refills s, reusing its slices so a steady refresh allocates
+// little. Nothing else may hold on to s's previous contents.
+func (a *Agg) SnapshotInto(s *Snapshot, o SnapOpts) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	s := Snapshot{Stats: a.stats, StubDNS: a.stubDNS}
-	s.Flows = make([]Flow, 0, len(a.flows))
+	s.Stats, s.StubDNS = a.stats, a.stubDNS
+	s.Flows = s.Flows[:0]
 	for _, f := range a.flows {
-		c := *f
-		c.Events = slices.Clip(f.Events) // appends beyond len never touch the shared prefix
-		s.Flows = append(s.Flows, c)
+		s.Flows = append(s.Flows, *f)
+		last := &s.Flows[len(s.Flows)-1]
+		last.Events = slices.Clip(f.Events) // appends beyond len never touch the shared prefix
 	}
-	s.Hosts = make([]Host, 0, len(a.hosts))
+	s.Hosts = s.Hosts[:0]
 	for ip, h := range a.hosts {
 		c, ok := a.hostCopies[ip]
 		if !ok || c.gen != h.gen {
@@ -619,41 +656,49 @@ func (a *Agg) Snapshot(o SnapOpts) Snapshot {
 		}
 		s.Hosts = append(s.Hosts, c)
 	}
+	s.Packets = s.Packets[:0]
 	if o.Packets {
-		s.Packets = make([]Packet, 0, a.n)
-		for i := 0; i < a.n; i++ {
-			s.Packets = append(s.Packets, a.recent[(a.head-1-i+recentCap)%recentCap])
+		for i := uint64(1); i <= uint64(a.n); i++ {
+			s.Packets = append(s.Packets, a.recent[(a.nextID-i)%recentCap])
 		}
 	}
+	s.DNS = s.DNS[:0]
 	if o.DNS {
-		s.DNS = make([]DNSEntry, 0, len(a.dns))
-		for _, e := range a.dns {
-			c := *e
-			c.Types, c.Answers, c.CNAMEs, c.Procs = slices.Clone(e.Types), slices.Clone(e.Answers), slices.Clone(e.CNAMEs), slices.Clone(e.Procs)
+		for name, e := range a.dns {
+			c, ok := a.dnsCopies[name]
+			if !ok || c.gen != e.gen {
+				c = *e
+				c.Types, c.Answers, c.CNAMEs, c.Procs = slices.Clone(e.Types), slices.Clone(e.Answers), slices.Clone(e.CNAMEs), slices.Clone(e.Procs)
+				a.dnsCopies[name] = c
+			}
 			s.DNS = append(s.DNS, c)
 		}
 	}
 	now := time.Now().Unix()
-	s.Buckets = make([]Bucket, 60)
+	if len(s.Buckets) != 60 {
+		s.Buckets = make([]Bucket, 60)
+	}
 	for i := range s.Buckets {
 		sec := now - int64(59-i)
-		s.Buckets[i].T = sec
+		s.Buckets[i] = Bucket{T: sec}
 		if b := a.secs[sec%bucketCap]; b.T == sec {
 			s.Buckets[i] = b
 		}
 	}
-	for _, mi := range a.macs {
-		c := *mi
-		c.IPs = maps.Clone(mi.IPs)
-		s.Macs = append(s.Macs, c)
+	s.Macs = s.Macs[:0]
+	if o.LAN {
+		for _, mi := range a.macs {
+			c := *mi
+			c.IPs = maps.Clone(mi.IPs)
+			s.Macs = append(s.Macs, c)
+		}
+		s.LANNames = make(map[netip.Addr]string, len(a.lanNames))
+		for k, v := range a.lanNames {
+			s.LANNames[k] = v.name
+		}
 	}
-	s.LANNames = make(map[netip.Addr]string, len(a.lanNames))
-	for k, v := range a.lanNames {
-		s.LANNames[k] = v.name
-	}
-	s.Notices = slices.Clone(a.notices)
+	s.Notices = append(s.Notices[:0], a.notices...)
 	slices.Reverse(s.Notices)
-	return s
 }
 
 // topN returns map keys sorted by value, largest first, ties by key.

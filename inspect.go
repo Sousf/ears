@@ -13,7 +13,7 @@ import (
 // decodeTree renders a frame layer by layer, one field per line, then a hex dump.
 func decodeTree(raw []byte, lt layers.LinkType) []string {
 	if len(raw) == 0 {
-		return []string{"no bytes kept for this packet"}
+		return []string{"bytes no longer kept: this packet has left the 5000-packet buffer"}
 	}
 	pkt := gopacket.NewPacket(raw, lt, gopacket.Default)
 	var lines []string

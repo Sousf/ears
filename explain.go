@@ -50,13 +50,19 @@ func startStream(ctx context.Context, id int, run func(emit func(string)) error)
 	ch := make(chan aiMsg, 64)
 	go func() {
 		defer close(ch)
-		err := run(func(s string) {
+		send := func(m aiMsg) {
 			select {
-			case ch <- aiMsg{id: id, text: s}:
-			case <-ctx.Done():
+			case ch <- m: // deliver whenever the buffer has room
+				return
+			default:
 			}
-		})
-		ch <- aiMsg{id: id, done: true, err: err}
+			select {
+			case ch <- m:
+			case <-ctx.Done(): // buffer full and the panel closed: nobody is reading
+			}
+		}
+		err := run(func(s string) { send(aiMsg{id: id, text: s}) })
+		send(aiMsg{id: id, done: true, err: err})
 	}()
 	return ch
 }

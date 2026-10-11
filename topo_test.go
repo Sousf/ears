@@ -166,7 +166,7 @@ func TestLANNamesAndMACs(t *testing.T) {
 
 	agg, res := testAgg(t)
 	feed(t, agg, mdnsFrame(t), dhcpFrame(t))
-	s := agg.Snapshot(SnapOpts{Packets: true, DNS: true})
+	s := agg.Snapshot(SnapOpts{Packets: true, DNS: true, LAN: true})
 	if s.LANNames[netip.MustParseAddr("192.168.1.50")] != "Living-Room-TV.local" {
 		t.Fatalf("lan names: %v", s.LANNames)
 	}
@@ -257,12 +257,20 @@ func TestMapRender(t *testing.T) {
 			_ = m.View()
 		}
 	}
-	// Animation only advances on the map.
+	// Animation advances on the map while traffic flows, and stops when it doesn't.
 	m.phase = 0
+	m.snap.Buckets = make([]Bucket, 60)
+	m.snap.Buckets[len(m.snap.Buckets)-2].In = 1000
 	mm, cmd := m.Update(animMsg{})
 	m = mm.(model)
 	if m.phase != 1 || cmd == nil {
 		t.Fatal("anim tick on map")
+	}
+	m.snap.Buckets[len(m.snap.Buckets)-2].In = 0
+	mm, cmd = m.Update(animMsg{})
+	m = mm.(model)
+	if cmd != nil || m.animOn {
+		t.Fatal("anim should stop when idle")
 	}
 	m.setView(viewFlows)
 	mm, cmd = m.Update(animMsg{})

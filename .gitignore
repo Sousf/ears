@@ -1,3 +1,4 @@
 /ears
 *.pcap
 !testdata/demo.pcap
+*.test

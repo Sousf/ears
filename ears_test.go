@@ -204,7 +204,7 @@ func TestAggregateDirections(t *testing.T) {
 		dnsFrame(t, "192.168.1.117", "1.1.1.1", false),                         // outbound
 		tcpFrame(t, "192.168.1.50", "192.168.1.255", 1000, 2000, "", nil),      // LAN broadcast, not ours
 	)
-	s := agg.Snapshot(SnapOpts{Packets: true, DNS: true})
+	s := agg.Snapshot(SnapOpts{Packets: true, DNS: true, LAN: true})
 	if s.Stats.Packets != 4 || s.Stats.PktsIn != 1 || s.Stats.PktsOut != 2 || s.Stats.PktsOther != 1 {
 		t.Fatalf("stats: %+v", s.Stats)
 	}
@@ -251,7 +251,7 @@ func TestAggregateDirections(t *testing.T) {
 		t.Fatalf("multicast classify: %s", got)
 	}
 	agg.Reset()
-	if s := agg.Snapshot(SnapOpts{Packets: true, DNS: true}); s.Stats.Packets != 0 || len(s.Flows) != 0 || len(s.Packets) != 0 || len(s.Notices) != 0 {
+	if s := agg.Snapshot(SnapOpts{Packets: true, DNS: true, LAN: true}); s.Stats.Packets != 0 || len(s.Flows) != 0 || len(s.Packets) != 0 || len(s.Notices) != 0 {
 		t.Fatalf("reset failed: %+v", s.Stats)
 	}
 }
@@ -264,14 +264,14 @@ func TestNamesAndRTT(t *testing.T) {
 	feedAt(t, agg, t0.Add(10*time.Millisecond), tcpFrame(t, "192.168.1.117", "203.0.113.5", 40000, 443, "SYN", nil))
 	feedAt(t, agg, t0.Add(35*time.Millisecond), tcpFrame(t, "203.0.113.5", "192.168.1.117", 443, 40000, "SYN,ACK", nil))
 	feedAt(t, agg, t0.Add(36*time.Millisecond), tcpFrame(t, "192.168.1.117", "203.0.113.5", 40000, 443, "ACK", nil))
-	s := agg.Snapshot(SnapOpts{Packets: true, DNS: true})
+	s := agg.Snapshot(SnapOpts{Packets: true, DNS: true, LAN: true})
 	f := findFlow(s, 40000)
 	if f == nil || f.Name != "example.com" || f.RTT != 25*time.Millisecond {
 		t.Fatalf("flow after dns: %+v", f)
 	}
 	// SNI overrides the DNS-learned name.
 	feedAt(t, agg, t0.Add(40*time.Millisecond), tcpFrame(t, "192.168.1.117", "203.0.113.5", 40000, 443, "PSH,ACK", clientHello("api.example.com")))
-	s = agg.Snapshot(SnapOpts{Packets: true, DNS: true})
+	s = agg.Snapshot(SnapOpts{Packets: true, DNS: true, LAN: true})
 	f = findFlow(s, 40000)
 	if f.Name != "api.example.com" {
 		t.Fatalf("sni name: %q", f.Name)
@@ -289,7 +289,7 @@ func TestNamesAndRTT(t *testing.T) {
 	feedAt(t, agg, t0, tcpFrame(t, "198.51.100.9", "192.168.1.117", 5000, 22, "SYN", nil))
 	feedAt(t, agg, t0.Add(1*time.Millisecond), tcpFrame(t, "192.168.1.117", "198.51.100.9", 22, 5000, "SYN,ACK", nil))
 	feedAt(t, agg, t0.Add(81*time.Millisecond), tcpFrame(t, "198.51.100.9", "192.168.1.117", 5000, 22, "ACK", nil))
-	f = findFlow(agg.Snapshot(SnapOpts{Packets: true, DNS: true}), 22)
+	f = findFlow(agg.Snapshot(SnapOpts{Packets: true, DNS: true, LAN: true}), 22)
 	if f == nil || f.RTT != 80*time.Millisecond {
 		t.Fatalf("inbound rtt: %+v", f)
 	}
@@ -312,7 +312,7 @@ func TestNotices(t *testing.T) {
 	// ARP: router changes MAC.
 	feedAt(t, agg, t0, arpFrame(t, macA, []byte{192, 168, 1, 1}, []byte{192, 168, 1, 117}))
 	feedAt(t, agg, t0.Add(time.Second), arpFrame(t, macB, []byte{192, 168, 1, 1}, []byte{192, 168, 1, 117}))
-	s := agg.Snapshot(SnapOpts{Packets: true, DNS: true})
+	s := agg.Snapshot(SnapOpts{Packets: true, DNS: true, LAN: true})
 	var kinds []string
 	for _, n := range s.Notices {
 		kinds = append(kinds, n.Kind)
@@ -334,7 +334,7 @@ func TestBucketsAndSpark(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		feedAt(t, agg, now.Add(-time.Duration(i)*time.Second), tcpFrame(t, "203.0.113.5", "192.168.1.117", 443, 40000, "ACK", make([]byte, 100*(i+1))))
 	}
-	s := agg.Snapshot(SnapOpts{Packets: true, DNS: true})
+	s := agg.Snapshot(SnapOpts{Packets: true, DNS: true, LAN: true})
 	if len(s.Buckets) != 60 {
 		t.Fatalf("buckets: %d", len(s.Buckets))
 	}
@@ -358,7 +358,7 @@ func TestRecentRing(t *testing.T) {
 	for i := 0; i < recentCap+10; i++ {
 		agg.Add(Packet{Time: time.Now(), Len: i, Proto: "TCP", Src: netip.MustParseAddr("203.0.113.5"), Dst: netip.MustParseAddr("192.168.1.117")})
 	}
-	s := agg.Snapshot(SnapOpts{Packets: true, DNS: true})
+	s := agg.Snapshot(SnapOpts{Packets: true, DNS: true, LAN: true})
 	if len(s.Packets) != recentCap || s.Packets[0].Len != recentCap+9 || s.Packets[recentCap-1].Len != 10 {
 		t.Fatalf("ring order wrong: n=%d first=%d last=%d", len(s.Packets), s.Packets[0].Len, s.Packets[len(s.Packets)-1].Len)
 	}
@@ -519,7 +519,7 @@ func TestViewsRender(t *testing.T) {
 		m.rebuild()
 		if c.view == viewPackets {
 			for i, p := range m.pkts { // pick a captured frame, not the hand-built one
-				if len(p.Raw) > 0 {
+				if len(m.agg.Raw(p.ID)) > 0 {
 					m.cursor = i
 					break
 				}
@@ -595,7 +595,7 @@ func TestNoProcessForOverheard(t *testing.T) {
 	feed(t, agg, mdnsFrame(t))
 	// This machine sending mDNS: attributed.
 	agg.Add(Packet{Time: time.Now(), Len: 80, Proto: "UDP", Src: netip.MustParseAddr("192.168.1.117"), Dst: netip.MustParseAddr("224.0.0.251"), SPort: 5353, DPort: 5353})
-	for _, f := range agg.Snapshot(SnapOpts{Packets: true, DNS: true}).Flows {
+	for _, f := range agg.Snapshot(SnapOpts{Packets: true, DNS: true, LAN: true}).Flows {
 		switch f.Dir {
 		case DirOther:
 			if f.Proc != "" {
@@ -718,5 +718,41 @@ func TestDeviceBook(t *testing.T) {
 	}
 	if err := b2.SaveIfDue(now, false); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Packet bytes are copied into the ring, so the capture buffer can be reused,
+// and fetched back by ID until the ring moves past them.
+func TestRawRing(t *testing.T) {
+	agg, _ := testAgg(t)
+	buf := tcpFrame(t, "203.0.113.5", "192.168.1.117", 443, 40000, "ACK", []byte("hello"))
+	p, _ := decode(buf, layers.LinkTypeEthernet, ci(len(buf)), opts)
+	agg.Add(p)
+	clear(buf) // the capture reuses its buffer
+	id := agg.Snapshot(SnapOpts{Packets: true}).Packets[0].ID
+	if got := agg.Raw(id); !strings.Contains(string(got), "hello") {
+		t.Fatalf("raw bytes lost after the buffer was reused: %q", got)
+	}
+	if agg.Snapshot(SnapOpts{Packets: true}).Packets[0].Raw != nil {
+		t.Fatal("snapshot should not carry bytes")
+	}
+	for i := 0; i < recentCap; i++ {
+		agg.Add(Packet{Time: time.Now(), Proto: "TCP", Src: netip.MustParseAddr("203.0.113.5"), Dst: netip.MustParseAddr("192.168.1.117")})
+	}
+	if agg.Raw(id) != nil || agg.Raw(1<<40) != nil {
+		t.Fatal("expired or unknown IDs should return nil")
+	}
+}
+
+// A refresh reuses the snapshot's buffers instead of reallocating them.
+func TestSnapshotIntoReuses(t *testing.T) {
+	agg, _ := testAgg(t)
+	for i := 0; i < 50; i++ {
+		agg.Add(Packet{Time: time.Now(), Len: 60, Proto: "TCP", Src: netip.MustParseAddr("192.168.1.117"), Dst: netip.AddrFrom4([4]byte{203, 0, 113, byte(i)}), SPort: 40000, DPort: 443})
+	}
+	var s Snapshot
+	agg.SnapshotInto(&s, SnapOpts{Packets: true})
+	if n := testing.AllocsPerRun(20, func() { agg.SnapshotInto(&s, SnapOpts{Packets: true}) }); n > 4 {
+		t.Fatalf("steady refresh allocates %.0f times", n)
 	}
 }

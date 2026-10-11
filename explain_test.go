@@ -297,3 +297,24 @@ func TestPickAsker(t *testing.T) {
 		t.Fatal("auto with nothing available should fail")
 	}
 }
+
+// Closing the panel mid-answer must not leave the stream goroutine blocked.
+func TestStreamGoroutineExitsWhenAbandoned(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	ch := startStream(ctx, 1, func(emit func(string)) error {
+		defer close(done)
+		for i := 0; i < 200; i++ { // more chunks than the channel buffers
+			emit("x")
+		}
+		return nil
+	})
+	cancel() // nobody reads ch
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream goroutine blocked after the reader went away")
+	}
+	for range ch { // the channel still closes
+	}
+}

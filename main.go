@@ -107,9 +107,8 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	packets := make(chan Packet, 4096)
 	errs := make(chan error, 1)
-	go cap.Run(ctx, packets, errs)
+	go cap.Run(ctx, agg.Add, errs)
 	defer cap.Close()
 
 	// With a local caching resolver, programs' lookups go over loopback and
@@ -117,21 +116,10 @@ func main() {
 	if !replay && *iface != "lo" && usesStub() {
 		stub := &Capture{Iface: "lo", Filter: "udp port 53", SnapLen: 1500}
 		if stub.Open() == nil {
-			stubPkts := make(chan Packet, 1024)
-			go stub.Run(ctx, stubPkts, make(chan error, 1))
+			go stub.Run(ctx, agg.AddStubDNS, make(chan error, 1))
 			defer stub.Close()
-			go func() {
-				for p := range stubPkts {
-					agg.AddStubDNS(p)
-				}
-			}()
 		}
 	}
-	go func() {
-		for p := range packets {
-			agg.Add(p)
-		}
-	}()
 
 	m := newModel(agg, res, cap, errs, *iface, *filter)
 	m.topo = NewTopo(*traceTo)

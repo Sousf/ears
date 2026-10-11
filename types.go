@@ -53,7 +53,8 @@ type Packet struct {
 	LANName []NameAddr // names announced over mDNS
 	DHCP    *DHCPInfo  // hostname and vendor from a DHCP request
 	DNS     *DNSMsg    // set on unicast DNS (port 53) queries and replies
-	Raw     []byte     // copy of the frame, at most rawCap bytes
+	Raw     []byte     // the frame, borrowed from the capture buffer until Agg.Add copies it
+	ID      uint64     // capture sequence number, for fetching the bytes back with Agg.Raw
 }
 
 type NameAddr struct {
@@ -98,6 +99,7 @@ type DNSEntry struct {
 	Answers []netip.Addr
 	CNAMEs  []string
 	Procs   []string
+	gen     uint64 // bumped on every change; lets Snapshot reuse an unchanged copy
 }
 
 // FlowKey identifies a conversation between a remote endpoint and a local one.

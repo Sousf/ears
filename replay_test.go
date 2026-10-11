@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -43,12 +44,14 @@ func replayAll(t *testing.T, c *Capture) []Packet {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	out := make(chan Packet, 64)
+	var got []Packet
 	errs := make(chan error, 1)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	c.Run(ctx, out, errs)
-	close(out)
+	c.Run(ctx, func(p Packet) {
+		p.Raw = slices.Clone(p.Raw) // borrowed from the capture buffer
+		got = append(got, p)
+	}, errs)
 	select {
 	case err := <-errs:
 		t.Fatalf("replay error: %v", err)
@@ -56,10 +59,6 @@ func replayAll(t *testing.T, c *Capture) []Packet {
 	}
 	if !c.Ended() {
 		t.Fatal("replay did not reach the end of the file")
-	}
-	var got []Packet
-	for p := range out {
-		got = append(got, p)
 	}
 	return got
 }
@@ -121,7 +120,7 @@ func TestSiteOf(t *testing.T) {
 		}
 		pkts = append(pkts, p)
 	}
-	s := siteOf(pkts)
+	s := siteOf(slices.Values(pkts))
 	if s.LocalIP != netip.MustParseAddr("10.0.0.23") || s.LocalMAC != macA.String() ||
 		s.Subnet != netip.MustParsePrefix("10.0.0.0/24") || s.Gateway != netip.MustParseAddr("10.0.0.1") ||
 		len(s.DNS) != 1 || s.DNS[0] != s.Gateway {

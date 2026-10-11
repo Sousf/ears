@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"maps"
 	"net/netip"
 	"slices"
@@ -23,35 +24,42 @@ type Site struct {
 	DNS      []netip.Addr
 }
 
-// inferSite reads a capture once and guesses which machine recorded it: the
-// IPv4 address in the most frames. The subnet is taken as its /24, the
-// gateway as whatever that machine sends off-subnet traffic to.
+// inferSite guesses which machine recorded a capture: the IPv4 address in
+// the most frames. The subnet is taken as its /24, the gateway as whatever
+// that machine sends off-subnet traffic to. The file is read twice, packet by
+// packet, so memory does not grow with its size.
 func inferSite(path string) (Site, error) {
-	h, err := pcap.OpenOffline(path)
-	if err != nil {
-		return Site{}, fmt.Errorf("replay %s: %w", path, err)
-	}
-	defer h.Close()
-	lt := h.LinkType()
-	opts := gopacket.DecodeOptions{Lazy: true, NoCopy: true}
-	var pkts []Packet
-	for {
-		data, ci, err := h.ReadPacketData()
-		if errors.Is(err, io.EOF) {
-			break
-		}
+	var readErr error
+	each := func(yield func(Packet) bool) {
+		h, err := pcap.OpenOffline(path)
 		if err != nil {
-			return Site{}, fmt.Errorf("replay %s: %w", path, err)
+			readErr = fmt.Errorf("replay %s: %w", path, err)
+			return
 		}
-		if p, ok := decode(data, lt, ci, opts); ok {
-			p.Raw = nil
-			pkts = append(pkts, p)
+		defer h.Close()
+		lt := h.LinkType()
+		opts := gopacket.DecodeOptions{Lazy: true, NoCopy: true}
+		for {
+			data, ci, err := h.ZeroCopyReadPacketData()
+			if errors.Is(err, io.EOF) {
+				return
+			}
+			if err != nil {
+				readErr = fmt.Errorf("replay %s: %w", path, err)
+				return
+			}
+			if p, ok := decode(data, lt, ci, opts); ok && !yield(p) {
+				return
+			}
 		}
 	}
-	return siteOf(pkts), nil
+	s := siteOf(each)
+	return s, readErr
 }
 
-func siteOf(pkts []Packet) Site {
+// siteOf infers the recording site from the packets that pkts yields. It
+// ranges over pkts twice.
+func siteOf(pkts iter.Seq[Packet]) Site {
 	unicast := func(ip netip.Addr) bool {
 		if !ip.Is4() || ip.IsMulticast() || ip.IsUnspecified() || ip.IsLoopback() {
 			return false
@@ -59,7 +67,7 @@ func siteOf(pkts []Packet) Site {
 		return ip.As4()[3] != 255
 	}
 	seen := map[netip.Addr]int{}
-	for _, p := range pkts {
+	for p := range pkts {
 		if p.Proto == "ARP" {
 			continue
 		}
@@ -77,8 +85,14 @@ func siteOf(pkts []Packet) Site {
 	s.Subnet = netip.PrefixFrom(s.LocalIP, 24).Masked()
 
 	macs, gwMACs := map[string]int{}, map[string]int{}
+	lanBySrcMAC := map[string]netip.Addr{} // first LAN address seen from each MAC
 	dns := map[netip.Addr]bool{}
-	for _, p := range pkts {
+	for p := range pkts {
+		if p.SrcMAC != "" && s.Subnet.Contains(p.Src) {
+			if _, ok := lanBySrcMAC[p.SrcMAC]; !ok {
+				lanBySrcMAC[p.SrcMAC] = p.Src
+			}
+		}
 		if p.Src != s.LocalIP || p.Proto == "ARP" {
 			continue
 		}
@@ -94,12 +108,7 @@ func siteOf(pkts []Packet) Site {
 	}
 	s.LocalMAC = top(macs, strings.Compare)
 	if gw := top(gwMACs, strings.Compare); gw != "" {
-		for _, p := range pkts {
-			if p.SrcMAC == gw && s.Subnet.Contains(p.Src) {
-				s.Gateway = p.Src
-				break
-			}
-		}
+		s.Gateway = lanBySrcMAC[gw]
 	}
 	s.DNS = slices.SortedFunc(maps.Keys(dns), netip.Addr.Compare)
 	return s

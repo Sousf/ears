@@ -138,7 +138,7 @@ func (m model) aiPacket(p Packet) (title, prompt string) {
 	}
 	b.WriteString("Decoded layers:\n")
 	hexLines := 0
-	for _, l := range decodeTree(p.Raw, m.linkType) {
+	for _, l := range decodeTree(m.agg.Raw(p.ID), m.linkType) {
 		if strings.HasPrefix(l, "▸ Hex dump") {
 			b.WriteString("First bytes in hex:\n")
 			hexLines = 1

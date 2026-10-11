@@ -158,8 +158,10 @@ func (c *Capture) Dropped() int {
 	return s.PacketsDropped + s.PacketsIfDropped
 }
 
-// Run reads frames until ctx is done and sends decoded summaries to out.
-func (c *Capture) Run(ctx context.Context, out chan<- Packet, errs chan<- error) {
+// Run reads frames until ctx is done and hands each decoded frame to sink.
+// p.Raw points into the capture buffer and is valid only during the call:
+// a sink that keeps the bytes must copy them.
+func (c *Capture) Run(ctx context.Context, sink func(Packet), errs chan<- error) {
 	defer close(c.done)
 	opts := gopacket.DecodeOptions{Lazy: true, NoCopy: true}
 	lt := c.handle.LinkType()
@@ -184,8 +186,7 @@ func (c *Capture) Run(ctx context.Context, out chan<- Packet, errs chan<- error)
 			return
 		}
 		if c.ReadFrom != "" {
-			// Copy before sleeping: the next read reuses the buffer.
-			data = append([]byte(nil), data...)
+			// data stays valid until the next read, so pacing needs no copy.
 			at, ok := pace.wait(ctx, ci.Timestamp, c.Speed)
 			if !ok {
 				return
@@ -195,14 +196,8 @@ func (c *Capture) Run(ctx context.Context, out chan<- Packet, errs chan<- error)
 		if c.pw != nil {
 			_ = c.pw.WritePacket(ci, data)
 		}
-		p, ok := decode(data, lt, ci, opts)
-		if !ok {
-			continue
-		}
-		select {
-		case out <- p:
-		case <-ctx.Done():
-			return
+		if p, ok := decode(data, lt, ci, opts); ok {
+			sink(p)
 		}
 	}
 }
@@ -253,7 +248,7 @@ func decode(data []byte, lt layers.LinkType, ci gopacket.CaptureInfo, opts gopac
 		} else {
 			p.Info = fmt.Sprintf("%s is-at %s", p.Src, p.SrcMAC)
 		}
-		p.Raw = copyRaw(data)
+		p.Raw = data
 		return p, true
 	}
 
@@ -322,15 +317,8 @@ func decode(data []byte, lt layers.LinkType, ci gopacket.CaptureInfo, opts gopac
 		p.Proto = "ICMPv6"
 		p.Info = l.(*layers.ICMPv6).TypeCode.String()
 	}
-	p.Raw = copyRaw(data)
+	p.Raw = data
 	return p, true
-}
-
-func copyRaw(data []byte) []byte {
-	n := min(len(data), rawCap)
-	raw := make([]byte, n)
-	copy(raw, data)
-	return raw
 }
 
 func isDNSPort(p uint16) bool { return p == 53 || p == 5353 || p == 5355 }
