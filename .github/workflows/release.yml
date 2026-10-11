@@ -1,9 +1,13 @@
 name: release
 
-# Merging MARSHAL's release pull request changes VERSION on the default
-# branch. This tags that version and publishes it with GoReleaser, which
-# also updates the formula in Sousf/homebrew-tap. Nothing else releases;
-# run it by hand from the Actions tab to retry a failed publish.
+# Merging MARSHAL's release pull request changes VERSION on main. This tags
+# that version, creates the GitHub release, and updates Formula/ears.rb in
+# Sousf/homebrew-tap. Run it by hand from the Actions tab to retry.
+#
+# ears links libpcap through cgo, so it ships as a source formula: brew
+# builds it on the machine it installs on, against that machine's libpcap.
+# A binary built here would link Ubuntu's libpcap.so.0.8, which Arch and
+# macOS do not have.
 on:
   push:
     branches: [main]
@@ -23,14 +27,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # GoReleaser builds its changelog from git history, so a shallow
-          # clone would produce an empty one.
           fetch-depth: 0
 
-      # A tag pushed with the workflow token does not start other workflows,
-      # so tagging and publishing happen here, in one job.
       - name: Tag VERSION
-        id: tag
         run: |
           v="v$(tr -d '[:space:]' < VERSION)"
           if ! [[ "$v" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -42,35 +41,75 @@ jobs:
               echo "::error::$v already tags another commit; bump VERSION"
               exit 1
             fi
-            echo "$v already tags this commit; publishing it again"
           else
             git tag "$v" "$GITHUB_SHA"
             git push origin "refs/tags/$v"
           fi
+          echo "TAG=$v" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: true
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "$TAG is already released"
+            exit 0
+          fi
+          # This version's section of CHANGELOG.md, without its heading.
+          awk -v h="## $TAG " 'index($0, h) == 1 {p = 1; next} /^## v/ {p = 0} p' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
 
-      # The formula is pushed to the tap over SSH with a deploy key that can
-      # write to that one repository and nothing else. GoReleaser wants a
-      # path to the key, so write it out with restrictive permissions.
-      - name: Prepare tap deploy key
+      # Pushed over SSH with a deploy key that can write to the tap and
+      # nothing else (marshal tap-key ears).
+      - name: Update the formula
         env:
           DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
         run: |
-          key_path="$RUNNER_TEMP/tap_deploy_key"
-          install -m 600 /dev/null "$key_path"
-          printf '%s\n' "$DEPLOY_KEY" > "$key_path"
-          echo "HOMEBREW_TAP_DEPLOY_KEY_PATH=$key_path" >> "$GITHUB_ENV"
-          # Pin GitHub's host key rather than disabling host verification.
+          url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${TAG}.tar.gz"
+          sha=$(curl -fsSL "$url" | sha256sum | cut -d' ' -f1)
+
+          key="$RUNNER_TEMP/tap_deploy_key"
+          install -m 600 /dev/null "$key"
+          printf '%s\n' "$DEPLOY_KEY" > "$key"
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes"
 
-      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
-        with:
-          version: "~> v2"
-          args: release --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          git clone --quiet --depth 1 git@github.com:Sousf/homebrew-tap.git "$RUNNER_TEMP/tap"
+          mkdir -p "$RUNNER_TEMP/tap/Formula"
+          cat > "$RUNNER_TEMP/tap/Formula/ears.rb" <<RUBY
+          class Ears < Formula
+            desc "Terminal traffic monitor for one network interface"
+            homepage "https://github.com/Sousf/ears"
+            url "${url}"
+            sha256 "${sha}"
+
+            depends_on "go" => :build
+            uses_from_macos "libpcap"
+
+            def install
+              system "go", "build", *std_go_args(ldflags: "-s -w")
+            end
+
+            def caveats
+              <<~EOS
+                Capturing needs raw socket rights. Either run ears with sudo,
+                or grant them to the binary once (Linux):
+                  sudo setcap cap_net_raw,cap_net_admin=eip #{opt_bin}/ears
+                Replaying a capture file with -r needs neither.
+              EOS
+            end
+
+            test do
+              assert_match "usage: ears", shell_output("#{bin}/ears -h 2>&1")
+            end
+          end
+          RUBY
+          cd "$RUNNER_TEMP/tap"
+          git add Formula/ears.rb
+          if git diff --cached --quiet; then
+            echo "formula already at $TAG"
+            exit 0
+          fi
+          git -c user.name=ears-release -c user.email=noreply@github.com commit --quiet -m "ears ${TAG}"
+          git push --quiet origin HEAD:main
