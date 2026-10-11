@@ -24,6 +24,7 @@ With no flags, `ears` captures on the interface that carries the default route.
 ./ears -f 'dst host 192.168.1.117'         # inbound to this address only
 ./ears -w capture.pcap                     # also save every frame for Wireshark
 ./ears -online                             # country and ISP for public addresses
+./ears -r capture.pcap                     # replay a saved capture, no setcap needed
 ```
 
 ## Views
@@ -197,6 +198,33 @@ view, search or direction filter shows, so Wireshark or `tcpdump -r` can open
 it. The file is flushed when
 `ears` quits. It grows at whatever rate the link carries, so pair it with
 `-f` on a busy interface.
+
+### Replaying a capture
+
+```bash
+./ears -r capture.pcap              # at the recorded pace
+./ears -r capture.pcap -speed 4     # four times faster
+./ears -r capture.pcap -speed 0     # as fast as the file reads
+```
+
+`-r` runs a pcap or pcapng file through the same views as a live capture and
+needs no `setcap`. Frames arrive at their recorded spacing, restamped to the
+current time, so rates, sparklines and LAST behave as they do live. `-speed`
+divides the spacing, and the round-trip times measured from it, by the same
+factor. `-f` filters the file. The header shows `end of file` once the last
+frame is in.
+
+`ears` guesses the recording machine from the file: the IPv4 address in the
+most frames. Its /24 is the LAN, and whatever it sends internet traffic
+through is the router. Anything that would describe the machine doing the
+replay stays off:
+
+- no PROCESS column values
+- no route trace, Wi-Fi or Tailscale on the Map
+- the known-devices file is neither read nor written, so each device raises a
+  `device` notice when it first appears
+- reverse DNS for public addresses only, since private ones belong to the
+  recorded network
 
 ## Where an address comes from
 

@@ -78,8 +78,9 @@ type ARPEntry struct {
 // background; View returns whatever is ready.
 type Topo struct {
 	mu      sync.Mutex
-	root    string // "/proc", overridable in tests
-	offline bool   // tests: never run external commands
+	root    string    // "/proc", overridable in tests
+	offline bool      // tests: never run external commands
+	fixed   *TopoView // replay: the recorded site, instead of this machine
 
 	oui        map[[3]byte]string
 	ouiLoading bool
@@ -104,6 +105,15 @@ func NewTopo(target string) *Topo {
 	return &Topo{root: "/proc", target: target, offline: topoOffline}
 }
 
+// NewReplayTopo serves a fixed view of a recorded site. It reads nothing
+// from this machine except the MAC vendor database.
+func NewReplayTopo(v TopoView) *Topo {
+	t := &Topo{offline: true, fixed: &v, ouiLoading: true}
+	// Load vendors now: a replay announces devices from the first tick.
+	t.loadOUI()
+	return t
+}
+
 type TopoView struct {
 	Iface      string
 	Wireless   bool
@@ -120,11 +130,21 @@ type TopoView struct {
 	Target     string
 	Hostname   string
 	DNS        []netip.Addr
+	Replay     bool // a recorded site: Iface names the capture file
 }
 
 // View reads the routing and neighbour tables and returns a snapshot. With
 // extras it also refreshes Wi-Fi and Tailscale details in the background.
 func (t *Topo) View(iface string, extras bool) TopoView {
+	if t.fixed != nil {
+		t.mu.Lock()
+		if t.oui == nil && !t.ouiLoading {
+			t.ouiLoading = true
+			go t.loadOUI()
+		}
+		t.mu.Unlock()
+		return *t.fixed
+	}
 	v := TopoView{Iface: iface, Gateway: t.defaultGateway(iface), ARP: t.readARP()}
 	v.Hostname, _ = os.Hostname()
 	if ifc, err := net.InterfaceByName(iface); err == nil {
@@ -530,6 +550,9 @@ var traceLine = regexp.MustCompile(`^\s*(\d+)\??:\s+(\S+)(?:\s+(\d+(?:\.\d+)?)ms
 // in progress. tracepath needs no privileges: it sends UDP probes with rising
 // TTLs and reads the ICMP "time exceeded" replies.
 func (t *Topo) Trace(onHop func(netip.Addr)) {
+	if t.fixed != nil {
+		return
+	}
 	t.mu.Lock()
 	if t.traceStop != nil {
 		t.traceStop()

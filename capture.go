@@ -5,10 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/gopacket"
@@ -24,7 +26,14 @@ type Capture struct {
 	Promisc bool
 	WriteTo string // optional pcap output path
 
+	// ReadFrom replays a saved capture instead of opening Iface. Frames are
+	// paced at their recorded spacing divided by Speed (0: no pacing) and
+	// restamped to the wall clock, so the rest of ears sees live traffic.
+	ReadFrom string
+	Speed    float64
+
 	handle *pcap.Handle
+	ended  atomic.Bool // replay reached the end of the file
 	file   *os.File
 	bw     *bufio.Writer
 	pw     *pcapgo.Writer
@@ -32,6 +41,9 @@ type Capture struct {
 }
 
 func (c *Capture) Open() error {
+	if c.ReadFrom != "" {
+		return c.openReplay()
+	}
 	inactive, err := pcap.NewInactiveHandle(c.Iface)
 	if err != nil {
 		return err
@@ -58,6 +70,26 @@ func (c *Capture) Open() error {
 			return fmt.Errorf("bpf filter %q: %w", c.Filter, err)
 		}
 	}
+	return c.attach(h)
+}
+
+// openReplay opens a pcap or pcapng file. It needs no capture rights.
+func (c *Capture) openReplay() error {
+	h, err := pcap.OpenOffline(c.ReadFrom)
+	if err != nil {
+		return fmt.Errorf("replay %s: %w", c.ReadFrom, err)
+	}
+	if c.Filter != "" {
+		if err := h.SetBPFFilter(c.Filter); err != nil {
+			h.Close()
+			return fmt.Errorf("bpf filter %q: %w", c.Filter, err)
+		}
+	}
+	return c.attach(h)
+}
+
+// attach finishes Open once the handle is ready.
+func (c *Capture) attach(h *pcap.Handle) error {
 	c.handle = h
 	if c.WriteTo != "" {
 		if err := c.openWriter(h.LinkType()); err != nil {
@@ -111,6 +143,9 @@ func (c *Capture) Close() {
 	}
 }
 
+// Ended reports that a replay has delivered its last frame.
+func (c *Capture) Ended() bool { return c.ended.Load() }
+
 // Dropped returns the kernel-side drop counter, or -1 if unavailable.
 func (c *Capture) Dropped() int {
 	if c.handle == nil {
@@ -128,6 +163,7 @@ func (c *Capture) Run(ctx context.Context, out chan<- Packet, errs chan<- error)
 	defer close(c.done)
 	opts := gopacket.DecodeOptions{Lazy: true, NoCopy: true}
 	lt := c.handle.LinkType()
+	var pace pacer
 	for ctx.Err() == nil {
 		data, ci, err := c.handle.ZeroCopyReadPacketData()
 		if err != nil {
@@ -137,11 +173,24 @@ func (c *Capture) Run(ctx context.Context, out chan<- Packet, errs chan<- error)
 			if ctx.Err() != nil {
 				return
 			}
+			if c.ReadFrom != "" && errors.Is(err, io.EOF) {
+				c.ended.Store(true)
+				return
+			}
 			select {
 			case errs <- err:
 			default:
 			}
 			return
+		}
+		if c.ReadFrom != "" {
+			// Copy before sleeping: the next read reuses the buffer.
+			data = append([]byte(nil), data...)
+			at, ok := pace.wait(ctx, ci.Timestamp, c.Speed)
+			if !ok {
+				return
+			}
+			ci.Timestamp = at
 		}
 		if c.pw != nil {
 			_ = c.pw.WritePacket(ci, data)
@@ -156,6 +205,33 @@ func (c *Capture) Run(ctx context.Context, out chan<- Packet, errs chan<- error)
 			return
 		}
 	}
+}
+
+// pacer maps recorded timestamps onto the wall clock for a replay.
+type pacer struct {
+	first, start time.Time
+}
+
+// wait sleeps until the frame recorded at ts is due and returns its new
+// timestamp. ok is false if ctx ends first.
+func (p *pacer) wait(ctx context.Context, ts time.Time, speed float64) (at time.Time, ok bool) {
+	if p.start.IsZero() {
+		p.first, p.start = ts, time.Now()
+	}
+	if speed <= 0 {
+		return time.Now(), true
+	}
+	at = p.start.Add(time.Duration(float64(max(ts.Sub(p.first), 0)) / speed))
+	if d := time.Until(at); d > 0 {
+		t := time.NewTimer(d)
+		defer t.Stop()
+		select {
+		case <-t.C:
+		case <-ctx.Done():
+			return at, false
+		}
+	}
+	return at, true
 }
 
 func decode(data []byte, lt layers.LinkType, ci gopacket.CaptureInfo, opts gopacket.DecodeOptions) (Packet, bool) {

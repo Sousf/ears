@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -32,8 +33,10 @@ func main() {
 	traceTo := flag.String("trace", "1.1.1.1", "Map trace target")
 	noTrace := flag.Bool("no-trace", false, "don't trace when Map opens")
 	aiModel := flag.String("ai-model", "claude-opus-5-5", "model for -ai")
+	readFrom := flag.String("r", "", "replay a pcap file instead of capturing (no capture rights needed)")
+	speed := flag.Float64("speed", 1, "replay speed, 0 for as fast as possible")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: ears [flags]\n\nNeeds capture rights: sudo setcap cap_net_raw,cap_net_admin=eip ./ears\n\n")
+		fmt.Fprintf(os.Stderr, "usage: ears [flags]\n\nNeeds capture rights, except with -r: sudo setcap cap_net_raw,cap_net_admin=eip ./ears\n\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -45,6 +48,15 @@ func main() {
 		}
 		fmt.Print(s)
 		return
+	}
+	replay := *readFrom != ""
+	var site Site
+	if replay {
+		var err error
+		if site, err = inferSite(*readFrom); err != nil {
+			fatal(err)
+		}
+		*iface = filepath.Base(*readFrom)
 	}
 	if *iface == "" {
 		*iface = defaultIface()
@@ -61,6 +73,9 @@ func main() {
 	}
 
 	cap := &Capture{Iface: *iface, Filter: *filter, SnapLen: *snaplen, Promisc: *promisc, WriteTo: *writeTo}
+	if replay {
+		cap.ReadFrom, cap.Speed = *readFrom, *speed
+	}
 	if err := cap.Open(); err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "permission") || strings.Contains(err.Error(), "Operation not permitted") {
 			fmt.Fprintf(os.Stderr, "%v\n\nNo capture rights. Run:\n  sudo setcap cap_net_raw,cap_net_admin=eip %s\n", err, os.Args[0])
@@ -71,17 +86,22 @@ func main() {
 
 	var res *Resolver
 	agg := NewAgg(func(ip netip.Addr) { res.Enqueue(ip) })
+	if replay {
+		agg.SetLocal(site.LocalIP, site.Subnet)
+	}
 	var err error
 	res, err = NewResolver(*online, *geo, *asn, agg.IsBroadcast)
 	if err != nil {
 		fatal(err)
 	}
+	res.publicOnly = replay
 	defer res.Close()
 	agg.kindOf = func(ip netip.Addr) string { return res.Get(ip).Kind }
 	res.onCountry = func(country string, ip netip.Addr, org string) {
 		agg.AddNotice("country", fmt.Sprintf("first traffic with %s: %s (%s)", country, ip, firstNonEmpty(org, "unknown")))
 	}
-	if !*noProc {
+	// A replay's ports belong to programs on the recording machine.
+	if !*noProc && !replay {
 		agg.procs = NewProcTable()
 	}
 
@@ -94,7 +114,7 @@ func main() {
 
 	// With a local caching resolver, programs' lookups go over loopback and
 	// never reach the capture interface. Watch them there for the DNS log.
-	if *iface != "lo" && usesStub() {
+	if !replay && *iface != "lo" && usesStub() {
 		stub := &Capture{Iface: "lo", Filter: "udp port 53", SnapLen: 1500}
 		if stub.Open() == nil {
 			stubPkts := make(chan Packet, 1024)
@@ -115,20 +135,28 @@ func main() {
 
 	m := newModel(agg, res, cap, errs, *iface, *filter)
 	m.topo = NewTopo(*traceTo)
-	defer m.topo.StopTrace()
-	switch *devFile {
-	case "none":
+	switch {
+	case replay:
+		// The recorded devices are not this network's, so the book stays
+		// in memory and announces each one as it first appears.
+		m.topo = NewReplayTopo(site.TopoView(*iface))
 		*devFile = ""
-	case "":
+	case *devFile == "none":
+		*devFile = ""
+	case *devFile == "":
 		*devFile = data + "/devices.json"
 	}
+	defer m.topo.StopTrace()
 	book, err := LoadDeviceBook(*devFile)
 	if err != nil {
 		fatal(fmt.Errorf("devices file: %w", err))
 	}
+	if replay {
+		book.quietTo = time.Time{}
+	}
 	m.book = book
 	defer func() { _ = book.SaveIfDue(time.Now(), true) }()
-	m.autoTrace = !*noTrace
+	m.autoTrace = !*noTrace && !replay
 	if *ai {
 		modelSet := false
 		flag.Visit(func(f *flag.Flag) { modelSet = modelSet || f.Name == "ai-model" })

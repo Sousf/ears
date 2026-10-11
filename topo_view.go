@@ -307,6 +307,8 @@ func (m model) mapLayout() ([]string, []mapObj) {
 		inet = append(inet, "ISP "+firstOrg)
 	}
 	switch {
+	case tv.Replay:
+		inet = append(inet, stDim.Render("no trace in a replay"))
 	case tv.TraceState == "running":
 		inet = append(inet, stDim.Render("tracing "+tv.Target+"…"))
 	case tv.TraceState == "done" && lastHop.IP.IsValid():
@@ -437,6 +439,8 @@ func (m model) mapLayout() ([]string, []mapObj) {
 			}
 			link = append(link, spineRow{text: stDim.Render(strings.Join(parts, " · "))})
 		}
+	} else if tv.Replay {
+		link = append(link, spineRow{text: stKey.Render("replay of " + tv.Iface)})
 	} else {
 		link = append(link, spineRow{text: stKey.Render("wired, " + tv.Iface)})
 	}

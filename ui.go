@@ -718,6 +718,12 @@ func (m model) renderHeader() string {
 	s := m.snap.Stats
 	up := time.Since(s.Start).Truncate(time.Second)
 	line1 := fmt.Sprintf("%s  iface %s", stTitle.Render("ears"), stKey.Render(m.iface))
+	if m.cap.ReadFrom != "" {
+		line1 = fmt.Sprintf("%s  replay %s", stTitle.Render("ears"), stKey.Render(m.iface))
+		if m.cap.Ended() {
+			line1 += "  " + stDim.Render("end of file")
+		}
+	}
 	if m.filter != "" {
 		line1 += "  filter " + stKey.Render(m.filter)
 	}
@@ -793,6 +799,9 @@ func (m model) renderFooter() string {
 		keys = []string{"q quit", "tab view", "j/k move", "s sort", "/ search", "enter details", "a ask"}
 	case viewMap:
 		keys = []string{"q quit", "tab view", "←↑↓→ select", "enter details", "a ask", "A ask about map", "u retrace"}
+		if m.cap.ReadFrom != "" {
+			keys = keys[:len(keys)-1]
+		}
 	}
 	keys = append(keys, "p pause", "r reset", "? help")
 	var parts []string

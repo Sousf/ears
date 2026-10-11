@@ -122,6 +122,25 @@ func (a *Agg) loadLocalAddrs() {
 	}
 }
 
+// SetLocal replaces the machine's own addresses with a replayed capture's,
+// so direction is judged from the recording machine's side. Call it before
+// any packet arrives.
+func (a *Agg) SetLocal(ip netip.Addr, subnet netip.Prefix) {
+	a.local = map[netip.Addr]bool{}
+	a.bcast = map[netip.Addr]bool{netip.MustParseAddr("255.255.255.255"): true}
+	if ip.IsValid() {
+		a.local[ip] = true
+	}
+	if subnet.IsValid() && subnet.Addr().Is4() {
+		b := subnet.Masked().Addr().As4()
+		for i, ones := 0, subnet.Bits(); i < 4; i++ {
+			keep := min(max(ones-8*i, 0), 8)
+			b[i] |= byte(0xff >> keep)
+		}
+		a.bcast[netip.AddrFrom4(b)] = true
+	}
+}
+
 // IsBroadcast reads a map that is never written after NewAgg, so it needs no
 // lock and is safe to call from the onNew hook.
 func (a *Agg) IsBroadcast(ip netip.Addr) bool { return a.bcast[ip] }

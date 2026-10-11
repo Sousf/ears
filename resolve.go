@@ -70,7 +70,11 @@ type Resolver struct {
 	city      *geoip2.Reader
 	asn       *geoip2.Reader
 	isLAN     func(netip.Addr) bool // broadcast detection from Agg
-	client    *http.Client
+	// publicOnly skips reverse DNS for private addresses. In a replay they
+	// belong to the recorded network, and this one's resolver would answer
+	// with its own devices' names.
+	publicOnly bool
+	client     *http.Client
 }
 
 var cgnat = netip.MustParsePrefix("100.64.0.0/10")
@@ -191,7 +195,7 @@ func (r *Resolver) Enqueue(ip netip.Addr) {
 		hi.GeoOK = !r.online || (hi.Country != "" && hi.Org != "")
 	}
 	// Reverse DNS for everything routable; skip multicast/broadcast noise.
-	wantName := public || hi.Kind == "LAN" || hi.Kind == "tailscale/CGNAT"
+	wantName := public || !r.publicOnly && (hi.Kind == "LAN" || hi.Kind == "tailscale/CGNAT")
 	hi.NameOK = !wantName
 	wantWeb := public && r.online && !hi.GeoOK
 	r.cache[ip] = hi

@@ -183,7 +183,11 @@ func (m model) deviceRows(d mapDevice) []kv2 {
 		}
 	}
 	if d.Self {
-		rows = append(rows, kv2{"role", "this machine, " + tv.Iface})
+		if tv.Replay {
+			rows = append(rows, kv2{"role", "recorded " + tv.Iface})
+		} else {
+			rows = append(rows, kv2{"role", "this machine, " + tv.Iface})
+		}
 		if len(tv.DNS) > 0 {
 			rows = append(rows, kv2{"DNS servers", m.dnsText()})
 		}
