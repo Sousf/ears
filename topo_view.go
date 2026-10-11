@@ -243,6 +243,7 @@ type mapObj struct {
 	key    string
 	line   int
 	height int
+	col    int // left edge on screen
 }
 
 func devKey(d mapDevice) string { return "dev:" + d.MAC }
@@ -266,7 +267,9 @@ func (m model) mapLayout() ([]string, []mapObj) {
 			lines = append(lines, truncLine(l, W))
 		}
 	}
-	mark := func(key string, height int) { objs = append(objs, mapObj{key: key, line: len(lines), height: height}) }
+	mark := func(key string, height, col int) {
+		objs = append(objs, mapObj{key: key, line: len(lines), height: height, col: col})
+	}
 
 	boxW := min(54, W-2)
 	// Wide terminals: boxes centred on the spine, pulled left so hop labels
@@ -320,7 +323,7 @@ func (m model) mapLayout() ([]string, []mapObj) {
 		inet = append(inet, stErr.Render(tv.TraceState))
 	}
 	inetBox := drawBoxSel(inet, boxW, stMapNet, -1, join, m.mapSel == "inet")
-	mark("inet", len(inetBox))
+	mark("inet", len(inetBox), boxLeft)
 	for _, l := range inetBox {
 		add(indent(boxLeft) + l)
 	}
@@ -473,7 +476,7 @@ func (m model) mapLayout() ([]string, []mapObj) {
 			}
 			text := r.text
 			if r.key != "" {
-				mark(r.key, 1)
+				mark(r.key, 1, sc)
 				if r.key == m.mapSel {
 					text = stSelected.Render(" " + stripANSI(text) + " ")
 				}
@@ -483,7 +486,7 @@ func (m model) mapLayout() ([]string, []mapObj) {
 	}
 	renderSpine(spineTop, 0)
 	rbox := drawBoxSel(rbody, boxW, stMapRouter, join, join, m.mapSel == "router")
-	mark("router", len(rbox))
+	mark("router", len(rbox), boxLeft)
 	for _, l := range rbox {
 		add(indent(boxLeft) + l)
 	}
@@ -523,7 +526,7 @@ func (m model) mapLayout() ([]string, []mapObj) {
 			if key == m.mapSel {
 				row = stSelected.Render(" " + stripANSI(row) + " ")
 			}
-			mark(key, 1)
+			mark(key, 1, 2)
 			add("  " + row)
 		}
 	}
@@ -608,7 +611,7 @@ func (m model) lanGrid(devs []mapDevice, tv TopoView, sc, W int) ([]string, []ma
 		for i := 0; i < n; i++ {
 			d := devs[r*cols+i]
 			boxes[i] = m.deviceBox(d, bw, devKey(d) == m.mapSel)
-			objs = append(objs, mapObj{key: devKey(d), line: len(out), height: len(boxes[i])})
+			objs = append(objs, mapObj{key: devKey(d), line: len(out), height: len(boxes[i]), col: x0 + i*(bw+1)})
 		}
 		for li := range boxes[0] {
 			trunk := "   "

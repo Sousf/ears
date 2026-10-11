@@ -345,6 +345,23 @@ func TestMapSelection(t *testing.T) {
 	if m.mapSel != "dev:9c:7b:ef:4e:d7:f6" {
 		t.Fatalf("after 2 x j: %q", m.mapSel)
 	}
+	// Left and right move between boxes on the same row, and stop at the ends.
+	for _, c := range []struct{ k, want string }{
+		{"left", "dev:04:e8:b9:48:29:f2"}, {"left", "dev:04:e8:b9:48:29:f2"},
+		{"right", "dev:9c:7b:ef:4e:d7:f6"}, {"l", "dev:9c:7b:ef:4e:d7:f6"}, {"h", "dev:04:e8:b9:48:29:f2"},
+	} {
+		mm, _ = m.Update(arrow(c.k))
+		m = mm.(model)
+		if m.mapSel != c.want || m.view != viewMap {
+			t.Fatalf("after %s: %q (view %s)", c.k, m.mapSel, m.view)
+		}
+	}
+	m.mapSel = "router"
+	mm, _ = m.Update(arrow("right"))
+	m = mm.(model)
+	if m.mapSel != "router" {
+		t.Fatalf("right from the router moved to %q", m.mapSel)
+	}
 	mm, _ = m.Update(key("G"))
 	m = mm.(model)
 	if m.mapSel != "ts:nas" {
@@ -388,5 +405,37 @@ func TestMapSelection(t *testing.T) {
 	}
 	if (TSPeer{Online: true, Active: true, Relay: "syd"}).Path() != "through relay syd" || (TSPeer{Online: true, Relay: "syd"}).Path() != "online, idle" {
 		t.Fatal("tailscale path wording")
+	}
+}
+
+func arrow(k string) tea.KeyMsg {
+	switch k {
+	case "left":
+		return tea.KeyMsg{Type: tea.KeyLeft}
+	case "right":
+		return tea.KeyMsg{Type: tea.KeyRight}
+	}
+	return key(k)
+}
+
+func TestArrowsDoNotSwitchViews(t *testing.T) {
+	agg, res := testAgg(t)
+	m := newModel(agg, res, &Capture{}, make(chan error), "wlan0", "")
+	for _, k := range []string{"left", "right", "h", "l"} {
+		mm, _ := m.Update(arrow(k))
+		m = mm.(model)
+		if m.view != viewFlows {
+			t.Fatalf("%s switched view to %s", k, m.view)
+		}
+	}
+	mm, _ := m.Update(key("tab"))
+	m = mm.(model)
+	if m.view != viewHosts {
+		t.Fatalf("tab: %s", m.view)
+	}
+	mm, _ = m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	m = mm.(model)
+	if m.view != viewFlows {
+		t.Fatalf("shift+tab: %s", m.view)
 	}
 }

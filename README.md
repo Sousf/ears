@@ -108,8 +108,9 @@ another target and `-no-trace` stops it running on its own. Routers past a
 certain point often ignore probes, and the trace stops after three silent
 hops.
 
-`j` and `k` move a highlight through everything on the map in reading order,
-and the map scrolls to follow it. `Enter` opens the selected item's details:
+`j`, `k` and the arrow keys move a highlight around the map: up and down in
+reading order, left and right between boxes on the same row. The map scrolls
+to follow it. `Enter` opens the selected item's details:
 
 | Item      | Details                                                                         |
 | --------- | ------------------------------------------------------------------------------- |

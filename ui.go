@@ -290,6 +290,12 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "k", "up":
 			m.moveMapSel(-1)
 			return m, nil
+		case "h", "left":
+			m.moveMapSelSide(-1)
+			return m, nil
+		case "l", "right":
+			m.moveMapSelSide(1)
+			return m, nil
 		case "pgdown", "ctrl+d":
 			m.mapOff += m.rowsAvail()
 			return m, nil
@@ -315,9 +321,9 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch k.String() {
 	case "q":
 		return m, tea.Quit
-	case "tab", "right", "l":
+	case "tab":
 		m.setView((m.view + 1) % viewCount)
-	case "shift+tab", "left", "h":
+	case "shift+tab":
 		m.setView((m.view + viewCount - 1) % viewCount)
 	case "1", "2", "3", "4", "5", "6":
 		m.setView(view(k.String()[0] - '1'))
@@ -759,7 +765,7 @@ func (m model) renderFooter() string {
 	case viewNotices:
 		keys = append(keys, "a ask")
 	case viewMap:
-		keys = []string{"q quit", "tab view", "j/k select", "enter details", "a ask about it", "A ask about the map", "u retrace", "? help"}
+		keys = []string{"q quit", "tab view", "←↑↓→ select", "enter details", "a ask", "A ask about map", "u retrace", "? help"}
 	}
 	keys = append(keys, "p pause", "r reset", "? help")
 	var parts []string
@@ -1385,5 +1391,31 @@ func (m *model) moveMapSel(delta int) {
 	}
 	if o.line+o.height > m.mapOff+avail {
 		m.mapOff = o.line + o.height - avail + 1
+	}
+}
+
+// moveMapSelSide selects the nearest object to the left (dir -1) or right
+// (dir 1) of the current one that shares any of its screen lines.
+func (m *model) moveMapSelSide(dir int) {
+	_, objs := m.mapLayout()
+	var cur *mapObj
+	for i := range objs {
+		if objs[i].key == m.mapSel {
+			cur = &objs[i]
+		}
+	}
+	if cur == nil {
+		return
+	}
+	best, bestDist := "", 1<<30
+	for _, o := range objs {
+		overlaps := o.line < cur.line+cur.height && cur.line < o.line+o.height
+		d := (o.col - cur.col) * dir
+		if o.key != cur.key && overlaps && d > 0 && d < bestDist {
+			best, bestDist = o.key, d
+		}
+	}
+	if best != "" {
+		m.mapSel = best
 	}
 }

@@ -276,7 +276,7 @@ func helpLines() []string {
 	h := func(s string) string { return stSection.Render(s) }
 	return []string{
 		h("Keys"),
-		"  tab 1-6   switch view      j k g G   move          /   search",
+		"  tab 1-6   switch view      ↑↓ j k    move          /   search",
 		"  s         sort             d         direction     i   inbound only",
 		"  enter     details/decode   t         timeline      a   ask Claude (-ai)",
 		"  u         retrace (Map)    A         ask about map p   pause    r reset    q quit",
@@ -287,7 +287,7 @@ func helpLines() []string {
 		"  Packets   frames, newest first",
 		"  Stats     bandwidth and breakdowns",
 		"  Notices   new countries, inbound connections, scans, ARP changes",
-		"  Map       LAN, router and route to the internet",
+		"  Map       LAN, router and route to the internet; ←→ move between boxes",
 		"",
 		h("Columns"),
 		"  DIR       in, out, or other (overheard)",
