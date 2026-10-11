@@ -294,7 +294,7 @@ func TestNamesAndRTT(t *testing.T) {
 	}
 	lines := timelineLines(*f, HostInfo{Kind: "public"})
 	joined := strings.Join(lines, "\n")
-	for _, want := range []string{"handshake complete", "round trip", "SYN,ACK", "←", "→"} {
+	for _, want := range []string{"connected", "rtt 80.0ms", "SYN,ACK", "←", "→"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("timeline missing %q:\n%s", want, joined)
 		}
@@ -571,7 +571,7 @@ func TestHumanFormats(t *testing.T) {
 	if humanBytes(1536) != "1.5 KB" || humanBytes(10) != "10 B" || humanBits(2_500_000) != "2.5 Mb/s" || humanCount(12345) != "12.3k" {
 		t.Fatalf("%s %s %s %s", humanBytes(1536), humanBytes(10), humanBits(2_500_000), humanCount(12345))
 	}
-	if rttStr(25*time.Millisecond) != "25.0ms" || ttlExplain(57) != "ttl 57 ≈ 7 hops away (if it started at 64)" {
+	if rttStr(25*time.Millisecond) != "25.0ms" || ttlExplain(57) != "ttl 57 (~7 hops)" {
 		t.Fatalf("%s | %s", rttStr(25*time.Millisecond), ttlExplain(57))
 	}
 }

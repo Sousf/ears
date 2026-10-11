@@ -116,20 +116,20 @@ func (c *ClaudeCode) run(ctx context.Context, question string, emit func(string)
 		return errors.New("cancelled")
 	}
 	if result != nil && result.IsError {
-		return fmt.Errorf("Claude Code returned an error: %s", firstLine(firstNonEmpty(result.Result, result.Subtype, stderr.String())))
+		return fmt.Errorf("Claude Code: %s", firstLine(firstNonEmpty(result.Result, result.Subtype, stderr.String())))
 	}
 	if waitErr != nil {
 		msg := firstLine(firstNonEmpty(stderr.String(), waitErr.Error()))
 		if strings.Contains(strings.ToLower(msg), "login") || strings.Contains(strings.ToLower(msg), "auth") {
-			return fmt.Errorf("Claude Code is not logged in. Run claude once and log in, then press a again (%s)", msg)
+			return fmt.Errorf("Claude Code not logged in: run claude to log in")
 		}
-		return fmt.Errorf("claude exited with an error: %s", msg)
+		return fmt.Errorf("claude failed: %s", msg)
 	}
 	if !streamed && result != nil && result.Result != "" {
 		emit(result.Result) // older CLIs without partial messages
 	}
 	if refused {
-		emit("\n\n[The model declined to answer this one. Any text above may be incomplete.]")
+		emit("\n\n[declined]")
 	}
 	return nil
 }

@@ -227,24 +227,24 @@ func timelineLines(f Flow, hi HostInfo) []string {
 		if f.Key.Proto == "TCP" {
 			switch {
 			case i == 0 && e.Flags == "SYN":
-				note = firstNonEmpty(note, "open: sender proposes a connection")
+				note = firstNonEmpty(note, "open")
 			case e.Flags == "SYN,ACK":
-				note = firstNonEmpty(note, "open: accepted")
+				note = firstNonEmpty(note, "accepted")
 				if f.RTT != 0 && f.Dir == DirOut {
-					note += "  (round trip " + rttStr(f.RTT) + ")"
+					note += " · rtt " + rttStr(f.RTT)
 				}
 			case i > 0 && e.Flags == "ACK" && f.Events[i-1].Flags == "SYN,ACK":
-				note = firstNonEmpty(note, "open: handshake complete")
+				note = firstNonEmpty(note, "connected")
 			case strings.Contains(e.Flags, "FIN"):
-				note = firstNonEmpty(note, "close: no more data this way")
+				note = firstNonEmpty(note, "close")
 			case strings.Contains(e.Flags, "RST"):
-				note = firstNonEmpty(note, "abort: connection reset")
+				note = firstNonEmpty(note, "reset")
 			}
 		}
 		gap := ""
 		if !prev.IsZero() {
 			if d := e.T.Sub(prev); d > 500*time.Millisecond {
-				gap = stDim.Render(fmt.Sprintf("  (+%s idle)", d.Truncate(time.Millisecond)))
+				gap = stDim.Render(fmt.Sprintf("  +%s idle", d.Truncate(time.Millisecond)))
 			}
 		}
 		prev = e.T
@@ -253,11 +253,9 @@ func timelineLines(f Flow, hi HostInfo) []string {
 		lines = append(lines, style.Render(fmt.Sprintf("  +%-10s %-4s %-14s %8d %12s  %s", fmtRel(rel), arrow, orDash(e.Flags), e.Len, seq, note))+gap)
 	}
 	if len(f.Events) >= eventCap {
-		lines = append(lines, stDim.Render(fmt.Sprintf("  … only the first %d packets of a flow are recorded", eventCap)))
+		lines = append(lines, stDim.Render(fmt.Sprintf("  … first %d packets only", eventCap)))
 	}
-	lines = append(lines, "",
-		stDim.Render("  → sent by this machine   ← received   ⇢ overheard.  BYTES is payload after headers; SEQ is relative to the first byte each side sent."),
-		stDim.Render("  A TCP connection opens with SYN, SYN,ACK, ACK. The time between the first two is one round trip to the other end."))
+	lines = append(lines, "", stDim.Render("  → sent  ← received  ⇢ overheard · BYTES payload · SEQ relative"))
 	return lines
 }
 
@@ -278,37 +276,27 @@ func helpLines() []string {
 	h := func(s string) string { return stSection.Render(s) }
 	return []string{
 		h("Keys"),
-		"  tab / shift+tab / 1-6    switch view         j k / pgup pgdn / g G   move",
-		"  s   cycle sort           d   cycle direction filter      i   inbound only",
-		"  /   search (esc clears)  enter   detail panel (Flows, Hosts) or decode tree (Packets)",
-		"  t   timeline of the selected flow (Flows)    p   pause display    r   reset counters    q   quit",
-		"  a   ask Claude to explain the selected row (start with -ai); in the answer, v shows exactly what was sent",
+		"  tab 1-6   switch view      j k g G   move          /   search",
+		"  s         sort             d         direction     i   inbound only",
+		"  enter     details/decode   t         timeline      a   ask Claude (-ai)",
+		"  u         retrace (Map)    A         ask about map p   pause    r reset    q quit",
 		"",
 		h("Views"),
-		"  Flows     one conversation: remote address and port to a local port, one protocol",
-		"  Hosts     one remote address with all its flows summed",
-		"  Packets   every captured frame, newest first; enter shows it field by field",
-		"  Stats     bandwidth over the last minute and bytes by protocol, port, process, country, organisation",
-		"  Notices   things worth a look: new countries, inbound connections from the internet, port scans, ARP changes",
-		"  Map       this machine, the LAN devices, the router, and each router on the path to the internet",
-		"            j/k select an item, enter shows its details, a asks Claude about it, A about the whole map, u re-runs the trace",
+		"  Flows     conversations",
+		"  Hosts     remote addresses",
+		"  Packets   frames, newest first",
+		"  Stats     bandwidth and breakdowns",
+		"  Notices   new countries, inbound connections, scans, ARP changes",
+		"  Map       LAN, router and route to the internet",
 		"",
 		h("Columns"),
-		"  DIR       in = sent to this machine, out = sent by it, other = overheard (broadcast, multicast, mirrored)",
-		"  REMOTE    the other end; for 'other' traffic, the sender",
-		"  RPORT     port on the remote; a well-known number (443 https, 53 dns) says what service",
-		"  LPORT     port on this machine; a high random number means this machine opened the connection",
-		"  PKTS/BYTES ↓ received, ↑ sent",
-		"  RTT       time from this machine's SYN to the remote's SYN,ACK: one round trip across the network",
-		"  TTL       hop limit left on packets from the remote; starts at 64, 128 or 255, minus one per router",
-		"  PROCESS   the local program owning the socket; only visible for processes of your user",
-		"  NAME      what the program asked for: the TLS server name, HTTP Host, or the DNS name that resolved here",
-		"  ORIGIN    where the address block is registered, from a local database; city precision at best",
-		"",
-		h("Reading it"),
-		"  Reverse DNS names the network owner (googleusercontent.com), NAME names the service (api.spotify.com).",
-		"  Cloud and CDN addresses place the datacenter, never the company renting it or the person behind it.",
-		"  Inbound SYN from a public address with no prior outbound traffic is someone on the internet knocking.",
-		"  Lots of ARP from the router is normal cache refresh. Two MACs claiming one IP is not.",
+		"  DIR       in, out, or other (overheard)",
+		"  RPORT     remote port      LPORT    local port",
+		"  ↓ ↑       received, sent",
+		"  RTT       handshake round trip",
+		"  TTL       hops left on arrival (starts at 64, 128 or 255)",
+		"  PROCESS   local program (your user only)",
+		"  NAME      TLS, HTTP or DNS name",
+		"  ORIGIN    GeoIP location and network",
 	}
 }

@@ -238,7 +238,7 @@ func TestMapRender(t *testing.T) {
 				t.Fatalf("width %d: line is %d wide:\n%s", size[0], w, l)
 			}
 		}
-		for _, want := range []string{"Internet", "Router", "HomeNet", "58.162.26.199", "Tailscale", "excellent", "built-in Wi-Fi"} {
+		for _, want := range []string{"Internet", "Router", "HomeNet", "58.162.26.199", "Tailscale", "excellent", "Wi-Fi built in"} {
 			if !strings.Contains(joined, want) {
 				t.Fatalf("width %d: map missing %q:\n%s", size[0], want, joined)
 			}
@@ -368,7 +368,7 @@ func TestMapSelection(t *testing.T) {
 	for _, c := range []struct{ sel, want string }{
 		{"dev:9c:7b:ef:4e:d7:f6", "9c:7b:ef:4e:d7:f6"},
 		{"router", "default gateway"},
-		{"hop:2", "time exceeded"},
+		{"hop:2", "58.162.26.199"},
 		{"inet", "120.148.41.212"},
 		{"ts:nas", "online, idle"},
 		{"dev:04:e8:b9:48:29:f2", "this machine"},

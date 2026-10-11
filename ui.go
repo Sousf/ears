@@ -254,7 +254,7 @@ func (m *model) noticeCountries() {
 			continue
 		}
 		m.seenCountries[hi.Country] = true
-		m.agg.AddNotice("country", fmt.Sprintf("first traffic involving %s: %s (%s)", hi.Country, h.IP, firstNonEmpty(hi.Org, hi.ASN, "unknown org")))
+		m.agg.AddNotice("country", fmt.Sprintf("first traffic with %s: %s (%s)", hi.Country, h.IP, firstNonEmpty(hi.Org, hi.ASN, "unknown")))
 	}
 }
 
@@ -1036,13 +1036,13 @@ func (m model) renderDetail() string {
 		rdns := hi.Name
 		if rdns == "" {
 			if hi.NameOK {
-				rdns = stDim.Render("(no reverse DNS)")
+				rdns = stDim.Render("none")
 			} else {
 				rdns = stDim.Render("(resolving…)")
 			}
 		}
 		names := topKeys(h.Names, 3)
-		nameStr := stDim.Render("(no name seen in TLS/DNS yet)")
+		nameStr := stDim.Render("none")
 		if len(names) > 0 {
 			nameStr = strings.Join(names, ", ")
 			if len(h.Names) > 3 {
@@ -1061,7 +1061,7 @@ func (m model) renderDetail() string {
 			extra += "    " + ttlExplain(h.TTL)
 		}
 		procs := topKeys(h.Procs, 4)
-		procStr := stDim.Render("(unknown: not a socket of this user, or too short-lived)")
+		procStr := stDim.Render("unknown")
 		if len(procs) > 0 {
 			procStr = strings.Join(procs, ", ")
 		}
@@ -1201,7 +1201,7 @@ func ttlExplain(t uint8) string {
 	case t <= 128:
 		start = 128
 	}
-	return fmt.Sprintf("ttl %d ≈ %d hops away (if it started at %d)", t, start-int(t), start)
+	return fmt.Sprintf("ttl %d (~%d hops)", t, start-int(t))
 }
 
 func addrPort(ip netip.Addr, port uint16) string {
@@ -1329,7 +1329,7 @@ func (m *model) refreshAI() {
 	}
 	width := m.w - 4
 	if o.showSent {
-		o.lines = []string{stDim.Render("  This is the exact text sent to the API with the request, besides the fixed instructions:"), ""}
+		o.lines = []string{stDim.Render("  Sent to Claude:"), ""}
 		for _, l := range wrapText(o.aiPrompt, width) {
 			o.lines = append(o.lines, "  "+l)
 		}
@@ -1348,7 +1348,7 @@ func (m *model) refreshAI() {
 		if o.aiErr != nil {
 			lines = append(lines, stErr.Render("  "+o.aiErr.Error()))
 		} else {
-			lines = append(lines, stDim.Render("  Answer by "+o.aiLabel+". It can be wrong; check claims against the data with v."))
+			lines = append(lines, stDim.Render("  "+o.aiLabel+" · may be wrong · v shows what was sent"))
 		}
 	}
 	o.lines = lines
@@ -1356,14 +1356,11 @@ func (m *model) refreshAI() {
 
 func aiDisabledLines() []string {
 	return []string{
-		"  Explanations are off. Start ears with -ai to turn them on:",
+		"  Off. Start with -ai:",
 		"",
-		"    ./ears -ai      # uses Claude Code and your Claude plan, or the API if ANTHROPIC_API_KEY is set",
+		"    ./ears -ai    # Claude Code, or the API if ANTHROPIC_API_KEY is set",
 		"",
-		"  Pressing a then sends a text description of the selected row to Claude:",
-		"  addresses, ports, server and process names, counters, and for a single packet its",
-		"  decoded headers and first 128 bytes. Nothing is sent until you press a, and only that row.",
-		"  The panel's v key shows the exact text before you rely on the answer.",
+		"  Only the selected row is sent, when you press a.",
 	}
 }
 

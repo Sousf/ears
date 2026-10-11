@@ -239,7 +239,7 @@ func (a *Agg) add(p Packet) (newRemote netip.Addr) {
 	}
 	if p.Proto == "ARP" && p.SrcMAC != "" && p.Src.IsValid() && !p.Src.IsUnspecified() {
 		if old, ok := a.arp[p.Src]; ok && old != p.SrcMAC {
-			a.notice(p.Time, "arp", fmt.Sprintf("%s changed MAC from %s to %s (ARP spoofing, or a replaced device)", p.Src, old, p.SrcMAC))
+			a.notice(p.Time, "arp", fmt.Sprintf("%s changed MAC %s → %s", p.Src, old, p.SrcMAC))
 		}
 		a.arp[p.Src] = p.SrcMAC
 		if hs := a.hosts[p.Src]; hs != nil {
@@ -346,7 +346,7 @@ func (a *Agg) trackTCP(f *Flow, h *Host, p Packet, inbound bool) {
 		f.synAt = p.Time
 		if p.Dir == DirIn && a.kindOf != nil && a.kindOf(f.Key.Remote) == "public" && p.Time.Sub(h.synNoticeAt) > time.Minute {
 			h.synNoticeAt = p.Time
-			a.notice(p.Time, "inbound", fmt.Sprintf("%s (public) opened a TCP connection to local port %d", f.Key.Remote, f.Key.LocalPort))
+			a.notice(p.Time, "inbound", fmt.Sprintf("%s opened TCP to local port %d", f.Key.Remote, f.Key.LocalPort))
 		}
 	case "SYN,ACK":
 		if f.Dir == DirOut && !f.synAt.IsZero() && f.RTT == 0 {
@@ -371,7 +371,7 @@ func (a *Agg) notePortHit(h *Host, t time.Time) {
 	if len(h.portHits) >= 10 && t.Sub(h.scanNoticeAt) > time.Minute {
 		h.scanNoticeAt = t
 		h.portHits = h.portHits[:0]
-		a.notice(t, "scan", fmt.Sprintf("%s hit 10+ different local ports within 5 s (port scan?)", h.IP))
+		a.notice(t, "scan", fmt.Sprintf("%s hit 10+ local ports in 5s", h.IP))
 	}
 }
 

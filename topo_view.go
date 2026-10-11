@@ -305,20 +305,17 @@ func (m model) mapLayout() ([]string, []mapObj) {
 	// Internet box.
 	inet := []string{stBold.Render(stMapNet.Render("☁  Internet"))}
 	if firstOrg != "" {
-		inet = append(inet, "through "+firstOrg+", your ISP")
+		inet = append(inet, "ISP "+firstOrg)
 	}
 	switch {
 	case tv.TraceState == "running":
-		inet = append(inet, stDim.Render(fmt.Sprintf("tracing the path to %s…", tv.Target)))
+		inet = append(inet, stDim.Render("tracing "+tv.Target+"…"))
 	case tv.TraceState == "done" && lastHop.IP.IsValid():
-		inet = append(inet, fmt.Sprintf("path to %s: %d hops, %s", tv.Target, lastHop.N, rttStr(lastHop.RTT)))
-		if lastHop.IP.String() != tv.Target {
-			inet = append(inet, stDim.Render("routers past the last hop ignore trace probes"))
-		}
+		inet = append(inet, fmt.Sprintf("%d hops to %s · %s", lastHop.N, tv.Target, rttStr(lastHop.RTT)))
 	case tv.TraceState == "done":
-		inet = append(inet, stDim.Render("no router on the path answered the trace"))
+		inet = append(inet, stDim.Render("no hops answered"))
 	case tv.TraceState == "":
-		inet = append(inet, stDim.Render("press u to trace the path out"))
+		inet = append(inet, stDim.Render("u: trace route"))
 	default:
 		inet = append(inet, stErr.Render(tv.TraceState))
 	}
@@ -375,7 +372,7 @@ func (m model) mapLayout() ([]string, []mapObj) {
 
 	// Router box body.
 	var rbody []string
-	rtitle := stBold.Render(stMapRouter.Render("⌂  Router")) + stDim.Render("  default gateway")
+	rtitle := stBold.Render(stMapRouter.Render("⌂  Router"))
 	rbody = append(rbody, rtitle)
 	if tv.Gateway.IsValid() {
 		gl := tv.Gateway.String()
@@ -384,26 +381,26 @@ func (m model) mapLayout() ([]string, []mapObj) {
 		}
 		rbody = append(rbody, gl)
 	} else {
-		rbody = append(rbody, stDim.Render("no default route on "+tv.Iface))
+		rbody = append(rbody, stDim.Render("no default route"))
 	}
 	if router != nil {
-		rbody = append(rbody, firstNonEmpty(router.Vendor, "unknown maker")+stDim.Render("  "+router.MAC))
+		rbody = append(rbody, firstNonEmpty(router.Vendor, "unknown")+stDim.Render("  "+router.MAC))
 	}
 	for _, h := range tv.Hops {
 		if h.N == 1 && h.IP == tv.Gateway && h.RTT > 0 {
-			rbody = append(rbody, fmt.Sprintf("%s away from this machine", rttStr(h.RTT)))
+			rbody = append(rbody, "latency "+rttStr(h.RTT))
 		}
 	}
 	if tv.WiFi != nil && tv.WiFi.BSSID != "" && router != nil {
 		if sameDevice(router.MAC, tv.WiFi.BSSID) {
-			rbody = append(rbody, "its built-in Wi-Fi radio is your access point")
+			rbody = append(rbody, "Wi-Fi built in")
 		} else {
 			v, _ := m.topo.Vendor(tv.WiFi.BSSID)
-			rbody = append(rbody, "Wi-Fi through a separate access point "+firstNonEmpty(v, tv.WiFi.BSSID))
+			rbody = append(rbody, "Wi-Fi via "+firstNonEmpty(v, tv.WiFi.BSSID))
 		}
 	}
 	if router != nil && router.BytesFrom+router.BytesTo > 0 {
-		rbody = append(rbody, fmt.Sprintf("carried %s down, %s up this session", humanBytes(router.BytesFrom), humanBytes(router.BytesTo)))
+		rbody = append(rbody, fmt.Sprintf("↓%s ↑%s", humanBytes(router.BytesFrom), humanBytes(router.BytesTo)))
 	}
 
 	// Link between the router and the LAN.
@@ -432,20 +429,20 @@ func (m model) mapLayout() ([]string, []mapObj) {
 			link = append(link, spineRow{text: stKey.Render("Wi-Fi")})
 		}
 		if w != nil && w.RSSI != 0 {
-			parts := []string{fmt.Sprintf("signal %d dBm, %s", w.RSSI, signalWord(w.RSSI))}
+			parts := []string{fmt.Sprintf("%d dBm %s", w.RSSI, signalWord(w.RSSI))}
 			if w.Mode != "" {
 				parts = append(parts, w.Mode)
 			}
 			if w.Bitrate != "" {
-				parts = append(parts, w.Bitrate+" link")
+				parts = append(parts, w.Bitrate)
 			}
 			link = append(link, spineRow{text: stDim.Render(strings.Join(parts, " · "))})
 		}
 	} else {
-		link = append(link, spineRow{text: stKey.Render("wired link on " + tv.Iface)})
+		link = append(link, spineRow{text: stKey.Render("wired, " + tv.Iface)})
 	}
 	if bk := m.lastBucket(); bk.In+bk.Out > 0 {
-		link = append(link, spineRow{text: stMapUp.Render("▲ "+humanBits(float64(bk.Out)*8)) + "  " + stMapDown.Render("▼ "+humanBits(float64(bk.In)*8)) + stDim.Render("  right now")})
+		link = append(link, spineRow{text: stMapUp.Render("▲ "+humanBits(float64(bk.Out)*8)) + "  " + stMapDown.Render("▼ "+humanBits(float64(bk.In)*8))})
 	}
 
 	// Animated packets: one dot climbing the spine while uploading, one
@@ -502,7 +499,7 @@ func (m model) mapLayout() ([]string, []mapObj) {
 
 	// Tailscale overlay network.
 	if len(tv.Tailscale) > 0 {
-		add("", stBold.Render(stMapNet.Render("Tailscale"))+stDim.Render(fmt.Sprintf("  a private network on top of the internet, interface tailscale0 %s", tv.TSIP)))
+		add("", stBold.Render(stMapNet.Render("Tailscale"))+stDim.Render("  "+tv.TSIP.String()))
 		for _, p := range tv.Tailscale {
 			dot := stDim.Render("○")
 			if p.Online {
@@ -531,7 +528,7 @@ func (m model) mapLayout() ([]string, []mapObj) {
 		}
 	}
 
-	add("", stDim.Render("● active in the last 30 s   ○ quiet   ")+stMapUp.Render("▲")+stDim.Render(" your traffic going out   ")+stMapDown.Render("▼")+stDim.Render(" coming in   j/k select, enter details"))
+	add("", stDim.Render("● active  ○ quiet  ")+stMapUp.Render("▲")+stDim.Render(" out  ")+stMapDown.Render("▼")+stDim.Render(" in"))
 	return lines, objs
 }
 
@@ -552,10 +549,10 @@ func (m model) lanGrid(devs []mapDevice, tv TopoView, sc, W int) ([]string, []ma
 	var objs []mapObj
 	label := "LAN"
 	if tv.Subnet.IsValid() {
-		label = fmt.Sprintf("LAN %s on %s · %d devices", tv.Subnet, tv.Iface, len(devs)+1)
+		label = fmt.Sprintf("LAN %s · %d devices", tv.Subnet, len(devs)+1)
 	}
 	if len(devs) == 0 {
-		out = append(out, indent(sc)+stMapSpine.Render("│"), indent(max(0, sc-len(label)/2))+stDim.Render(label+" · no other devices seen yet"))
+		out = append(out, indent(sc)+stMapSpine.Render("│"), indent(max(0, sc-len(label)/2))+stDim.Render(label+" · no other devices"))
 		return out, nil
 	}
 	for r := 0; r < rows; r++ {
@@ -643,11 +640,11 @@ func (m model) deviceBox(d mapDevice, bw int, sel bool) []string {
 	name := d.Name
 	switch {
 	case d.Self:
-		name = firstNonEmpty(name, "this machine") + stMapSelf.Render(" ★ you")
+		name = firstNonEmpty(name, "this machine") + stMapSelf.Render(" ★")
 	case name == "" && d.Vendor != "":
-		name = d.Vendor + " device"
+		name = d.Vendor
 	case name == "":
-		name = "unknown device"
+		name = "unknown"
 	}
 	ip := "-"
 	if len(d.IPs) > 0 {
@@ -659,14 +656,14 @@ func (m model) deviceBox(d mapDevice, bw int, sel bool) []string {
 	maker := d.Vendor
 	switch {
 	case d.Private:
-		maker = stDim.Render("private MAC: a phone?")
+		maker = stDim.Render("random MAC")
 	case maker == "":
 		maker = stDim.Render(d.MAC)
 	}
 	if d.Hint != "" {
 		maker += stDim.Render(" · " + d.Hint)
 	}
-	traffic := stDim.Render("in the ARP table, quiet")
+	traffic := stDim.Render("quiet")
 	if !d.ARPOnly && d.BytesFrom+d.BytesTo > 0 {
 		traffic = fmt.Sprintf("↓%s ↑%s", shortBytes(d.BytesTo), shortBytes(d.BytesFrom))
 		if !d.Last.IsZero() {

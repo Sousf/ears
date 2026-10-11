@@ -138,7 +138,7 @@ func TestAskClaudeUI(t *testing.T) {
 	// Without -ai, the key explains how to enable it and sends nothing.
 	mm, cmd := m.Update(key("a"))
 	m = mm.(model)
-	if m.overlay == nil || !strings.Contains(m.View(), "Start ears with -ai") || cmd != nil {
+	if m.overlay == nil || !strings.Contains(m.View(), "Start with -ai") || cmd != nil {
 		t.Fatalf("disabled panel:\n%s", m.View())
 	}
 	mm, _ = m.Update(key("esc"))
@@ -164,7 +164,7 @@ func TestAskClaudeUI(t *testing.T) {
 		m = mm.(model)
 	}
 	out := m.View()
-	if !strings.Contains(out, "This is an HTTPS connection.") || !strings.Contains(out, "Answer by claude-opus-5-5 via the API") {
+	if !strings.Contains(out, "This is an HTTPS connection.") || !strings.Contains(out, "claude-opus-5-5 via the API · may be wrong") {
 		t.Fatalf("answer panel:\n%s", out)
 	}
 	// v shows the exact prompt, which describes the selected flow.

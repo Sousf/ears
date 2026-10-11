@@ -11,16 +11,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-const explainSystem = `You explain network traffic captured by "ears", a packet monitor running on the user's own computer. The user is learning networking. They selected one item in the tool and want to know what it is.
+const explainSystem = `You explain network traffic captured by "ears", a packet monitor on the user's own computer. The user selected one item and wants to know what it is.
 
-Answer in plain text for a terminal: no markdown, no headings, no bold. Use short paragraphs, and a dash list only if it really helps. Aim for 120 to 250 words.
+Be concise: at most 80 words, plain text for a terminal, no markdown. Say what it most likely is, then anything worth checking. Use the actual values given. Skip background explanations unless they are needed to answer.
 
-Cover, in this order:
-1. What this traffic most likely is, in one or two sentences, naming the program, service or protocol when the data supports it.
-2. The networking concepts it shows, explained concretely using the actual values given (ports, flags, TTL, round-trip time, sizes).
-3. Whether it looks normal for a home computer, and if anything is worth checking, the exact thing to look at.
-
-Base every claim on the data given. Server names, process names and the organisation behind an address are strong evidence; city-level geolocation is approximate and cloud addresses only show the datacenter. When you are guessing, say so in the same sentence. Never present a guess as fact.`
+Base every claim on the data given. When guessing, say so in the same sentence.`
 
 // Explainer sends a description of selected traffic to Claude and streams the answer.
 type Explainer struct {
@@ -89,7 +84,7 @@ func (e *Explainer) stream(ctx context.Context, question string, emit func(strin
 		return explainErr(err)
 	}
 	if refused {
-		emit("\n\n[The model declined to answer this one. Any text above may be incomplete.]")
+		emit("\n\n[declined]")
 	}
 	return nil
 }
@@ -100,14 +95,14 @@ func explainErr(err error) error {
 	if errors.As(err, &apiErr) {
 		switch apiErr.StatusCode {
 		case 401, 403:
-			return fmt.Errorf("the API rejected the credentials (HTTP %d). Set ANTHROPIC_API_KEY to a key from console.anthropic.com", apiErr.StatusCode)
+			return fmt.Errorf("API key rejected (HTTP %d): check ANTHROPIC_API_KEY", apiErr.StatusCode)
 		case 429:
-			return fmt.Errorf("rate limited by the API (HTTP 429). Wait a moment and press a again")
+			return fmt.Errorf("rate limited, try again shortly")
 		case 400:
-			return fmt.Errorf("the API rejected the request: %s", firstLine(apiErr.Error()))
+			return fmt.Errorf("request rejected: %s", firstLine(apiErr.Error()))
 		}
 		if apiErr.StatusCode >= 500 {
-			return fmt.Errorf("the API had a server error (HTTP %d). Try again shortly", apiErr.StatusCode)
+			return fmt.Errorf("API server error (HTTP %d)", apiErr.StatusCode)
 		}
 	}
 	if errors.Is(err, context.Canceled) {
@@ -115,7 +110,7 @@ func explainErr(err error) error {
 	}
 	msg := err.Error()
 	if strings.Contains(msg, "api key") || strings.Contains(msg, "API key") || strings.Contains(msg, "credentials") {
-		return fmt.Errorf("no API credentials found. Set ANTHROPIC_API_KEY to a key from console.anthropic.com (%s)", firstLine(msg))
+		return fmt.Errorf("no API key: set ANTHROPIC_API_KEY")
 	}
 	return fmt.Errorf("request failed: %s", firstLine(msg))
 }

@@ -140,7 +140,7 @@ normal after replacing a router or device. Otherwise it can mean ARP spoofing.
 ```
 
 Press `a` on a row in Flows, Hosts, Packets or Notices and Claude explains it
-in a panel: what the traffic probably is, the concepts behind the values, and
+in a panel, in under 80 words: what the traffic probably is and
 whether anything looks off. Text starts after about 4 seconds and streams in.
 `Esc` closes the panel and cancels the request.
 

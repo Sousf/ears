@@ -15,23 +15,23 @@ import (
 )
 
 func main() {
-	iface := flag.String("i", "", "interface to capture on (default: the default-route interface)")
-	filter := flag.String("f", "", "BPF capture filter, e.g. 'not port 22' or 'tcp and dst host 192.168.1.117'")
-	snaplen := flag.Int("snaplen", 262144, "bytes to capture per packet")
-	promisc := flag.Bool("promisc", true, "capture in promiscuous mode (see other hosts' broadcast/mirrored traffic)")
-	list := flag.Bool("list", false, "list capture interfaces and exit")
-	online := flag.Bool("online", false, "look up country/ISP of public addresses via ip-api.com (sends those IPs to a third party, 40/min)")
-	geo := flag.String("geoip", "", "City or Country .mmdb, MaxMind or DB-IP format (default: ~/.local/share/ears/city.mmdb if present)")
-	asn := flag.String("asn", "", "ASN .mmdb, MaxMind or DB-IP format (default: ~/.local/share/ears/asn.mmdb if present)")
-	writeTo := flag.String("w", "", "also write every captured frame to this pcap file (open it in Wireshark)")
-	noProc := flag.Bool("no-proc", false, "do not map local ports to processes via /proc")
-	ai := flag.Bool("ai", false, "enable the a key: send the selected row to Claude for an explanation")
-	aiBackend := flag.String("ai-backend", "auto", "how -ai reaches Claude: api (ANTHROPIC_API_KEY), claude-code (your Claude plan via the claude command), or auto (api when a key is set)")
-	traceTo := flag.String("trace", "1.1.1.1", "address the Map view traces the route to")
-	noTrace := flag.Bool("no-trace", false, "do not trace the route automatically when the Map view opens (u still does)")
-	aiModel := flag.String("ai-model", "claude-opus-5-5", "Claude model for -ai (the claude-code backend uses Claude Code's default unless this is set)")
+	iface := flag.String("i", "", "interface (default: default route)")
+	filter := flag.String("f", "", "BPF filter, e.g. 'not port 22'")
+	snaplen := flag.Int("snaplen", 262144, "bytes kept per packet")
+	promisc := flag.Bool("promisc", true, "promiscuous mode")
+	list := flag.Bool("list", false, "list interfaces")
+	online := flag.Bool("online", false, "look up public IPs via ip-api.com (sends them there)")
+	geo := flag.String("geoip", "", "city .mmdb (default ~/.local/share/ears/city.mmdb)")
+	asn := flag.String("asn", "", "ASN .mmdb (default ~/.local/share/ears/asn.mmdb)")
+	writeTo := flag.String("w", "", "save frames to a pcap file")
+	noProc := flag.Bool("no-proc", false, "skip process lookup")
+	ai := flag.Bool("ai", false, "enable Ask Claude (a key)")
+	aiBackend := flag.String("ai-backend", "auto", "auto, api or claude-code")
+	traceTo := flag.String("trace", "1.1.1.1", "Map trace target")
+	noTrace := flag.Bool("no-trace", false, "don't trace when Map opens")
+	aiModel := flag.String("ai-model", "claude-opus-5-5", "model for -ai")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: ears [flags]\n\nCapture needs raw-socket rights. Either run as root or grant them once:\n  sudo setcap cap_net_raw,cap_net_admin=eip ./ears\n\nflags:\n")
+		fmt.Fprintf(os.Stderr, "usage: ears [flags]\n\nNeeds capture rights: sudo setcap cap_net_raw,cap_net_admin=eip ./ears\n\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -61,7 +61,7 @@ func main() {
 	cap := &Capture{Iface: *iface, Filter: *filter, SnapLen: *snaplen, Promisc: *promisc, WriteTo: *writeTo}
 	if err := cap.Open(); err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "permission") || strings.Contains(err.Error(), "Operation not permitted") {
-			fmt.Fprintf(os.Stderr, "%v\n\nNo permission to capture. Run as root, or grant the binary capture rights once:\n  sudo setcap cap_net_raw,cap_net_admin=eip %s\n", err, os.Args[0])
+			fmt.Fprintf(os.Stderr, "%v\n\nNo capture rights. Run:\n  sudo setcap cap_net_raw,cap_net_admin=eip %s\n", err, os.Args[0])
 			os.Exit(1)
 		}
 		fatal(err)
