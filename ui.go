@@ -20,6 +20,7 @@ const (
 	viewFlows view = iota
 	viewHosts
 	viewPackets
+	viewDNS
 	viewStats
 	viewNotices
 	viewMap
@@ -27,7 +28,7 @@ const (
 )
 
 func (v view) String() string {
-	return [...]string{"Flows", "Hosts", "Packets", "Stats", "Notices", "Map"}[v]
+	return [...]string{"Flows", "Hosts", "Packets", "DNS", "Stats", "Notices", "Map"}[v]
 }
 
 type sortKey int
@@ -124,6 +125,8 @@ type model struct {
 	aiSeq    int
 
 	topo      *Topo
+	book      *DeviceBook
+	observed  time.Time
 	tv        TopoView
 	mapOff    int
 	mapSel    string // key of the selected map object
@@ -149,17 +152,17 @@ type model struct {
 	flows   []Flow
 	hosts   []Host
 	pkts    []Packet
+	dns     []DNSEntry
 	notices []Notice
 
-	seenCountries map[string]bool
-	prevStats     Stats
-	prevT         time.Time
-	pps, bps      float64
+	prevStats Stats
+	prevT     time.Time
+	pps, bps  float64
 }
 
 func newModel(agg *Agg, res *Resolver, cap *Capture, errs <-chan error, iface, filter string) model {
 	m := model{agg: agg, res: res, cap: cap, errs: errs, iface: iface, filter: filter, w: 80, h: 24,
-		pcapOut: cap.WriteTo, linkType: cap.LinkType(), seenCountries: map[string]bool{}, topo: NewTopo("1.1.1.1")}
+		pcapOut: cap.WriteTo, linkType: cap.LinkType(), topo: NewTopo("1.1.1.1")}
 	return m
 }
 
@@ -190,12 +193,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		if !m.paused {
 			m.agg.SetDropped(m.cap.Dropped())
-			m.snap = m.agg.Snapshot()
+			m.snap = m.agg.Snapshot(m.snapOpts())
 			m.updateRates(time.Time(msg))
-			m.noticeCountries()
 			if m.view == viewMap {
-				m.tv = m.topo.View(m.iface)
+				m.tv = m.topo.View(m.iface, true)
 			}
+			m.observeDevices(time.Time(msg))
 			m.rebuild()
 		}
 		return m, tick()
@@ -244,18 +247,6 @@ func (m *model) updateRates(now time.Time) {
 	}
 	m.prevStats = s
 	m.prevT = now
-}
-
-// noticeCountries raises a notice the first time traffic involves a new country.
-func (m *model) noticeCountries() {
-	for _, h := range m.snap.Hosts {
-		hi := m.res.Get(h.IP)
-		if hi.Country == "" || m.seenCountries[hi.Country] {
-			continue
-		}
-		m.seenCountries[hi.Country] = true
-		m.agg.AddNotice("country", fmt.Sprintf("first traffic with %s: %s (%s)", hi.Country, h.IP, firstNonEmpty(hi.Org, hi.ASN, "unknown")))
-	}
 }
 
 func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -325,7 +316,7 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.setView((m.view + 1) % viewCount)
 	case "shift+tab":
 		m.setView((m.view + viewCount - 1) % viewCount)
-	case "1", "2", "3", "4", "5", "6":
+	case "1", "2", "3", "4", "5", "6", "7":
 		m.setView(view(k.String()[0] - '1'))
 	case "u":
 		if m.view == viewMap {
@@ -366,6 +357,11 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if m.view == viewPackets {
 			m.openDecode()
+		} else if m.view == viewDNS {
+			if m.cursor < len(m.dns) {
+				e := m.dns[m.cursor]
+				m.overlay = &overlay{title: "DNS " + e.Name, lines: detailRows(m.dnsRows(e), m.w-2)}
+			}
 		} else {
 			m.detail = !m.detail
 		}
@@ -381,8 +377,8 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.paused = !m.paused
 	case "r":
 		m.agg.Reset()
-		m.snap = m.agg.Snapshot()
-		m.seenCountries = map[string]bool{}
+		m.snap = m.agg.Snapshot(m.snapOpts())
+		m.res.ResetCountries()
 		m.cursor, m.offset = 0, 0
 	}
 	m.rebuild()
@@ -393,11 +389,19 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// snapOpts asks the aggregator for only what the current view shows.
+func (m *model) snapOpts() SnapOpts {
+	return SnapOpts{Packets: m.view == viewPackets, DNS: m.view == viewDNS}
+}
+
 func (m *model) setView(v view) {
 	m.view = v
 	m.cursor, m.offset = 0, 0
+	if v == viewPackets || v == viewDNS {
+		m.snap = m.agg.Snapshot(m.snapOpts()) // fill the view now instead of on the next tick
+	}
 	if v == viewMap {
-		m.tv = m.topo.View(m.iface)
+		m.tv = m.topo.View(m.iface, true)
 		if m.mapSel == "" {
 			m.mapSel = "router"
 		}
@@ -411,7 +415,7 @@ func (m *model) startTrace() {
 	m.traced = true
 	res := m.res
 	m.topo.Trace(func(ip netip.Addr) { res.Enqueue(ip) })
-	m.tv = m.topo.View(m.iface)
+	m.tv = m.topo.View(m.iface, true)
 }
 
 func (m model) handleOverlayKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -519,6 +523,15 @@ func (m *model) rebuild() {
 		m.pkts = append(m.pkts, p)
 	}
 
+	m.dns = m.dns[:0]
+	for _, e := range m.snap.DNS {
+		if q != "" && !m.dnsMatches(e, q) {
+			continue
+		}
+		m.dns = append(m.dns, e)
+	}
+	sort.SliceStable(m.dns, func(i, j int) bool { return m.lessDNS(&m.dns[i], &m.dns[j]) })
+
 	m.notices = m.notices[:0]
 	for _, n := range m.snap.Notices {
 		if q != "" && !strings.Contains(strings.ToLower(n.Kind+" "+n.Text), q) {
@@ -556,6 +569,8 @@ func (m *model) rowCount() int {
 		return len(m.pkts)
 	case viewNotices:
 		return len(m.notices)
+	case viewDNS:
+		return len(m.dns)
 	}
 	return 0
 }
@@ -687,6 +702,8 @@ func (m model) View() string {
 		m.renderStats(&b)
 	case viewNotices:
 		m.renderNotices(&b)
+	case viewDNS:
+		m.renderDNS(&b)
 	case viewMap:
 		m.renderMap(&b)
 	}
@@ -737,7 +754,15 @@ func (m model) renderHeader() string {
 		}
 	}
 	line3 := strings.Join(tabs, "")
-	if m.view != viewMap && m.view != viewStats {
+	switch m.view {
+	case viewMap, viewStats:
+	case viewDNS:
+		src := "upstream lookups on " + m.iface
+		if m.snap.StubDNS {
+			src = "all lookups via 127.0.0.53"
+		}
+		line3 += stDim.Render(fmt.Sprintf("  sort: %s  %s", m.sort, src))
+	default:
 		line3 += stDim.Render(fmt.Sprintf("  sort: %s  dir: %s", m.sort, m.dir))
 	}
 	if m.searching {
@@ -764,8 +789,10 @@ func (m model) renderFooter() string {
 		keys = append(keys, "enter decode", "a ask")
 	case viewNotices:
 		keys = append(keys, "a ask")
+	case viewDNS:
+		keys = []string{"q quit", "tab view", "j/k move", "s sort", "/ search", "enter details", "a ask"}
 	case viewMap:
-		keys = []string{"q quit", "tab view", "←↑↓→ select", "enter details", "a ask", "A ask about map", "u retrace", "? help"}
+		keys = []string{"q quit", "tab view", "←↑↓→ select", "enter details", "a ask", "A ask about map", "u retrace"}
 	}
 	keys = append(keys, "p pause", "r reset", "? help")
 	var parts []string
@@ -943,7 +970,7 @@ func (m model) renderHosts(b *strings.Builder) {
 		if name == "" {
 			name = hi.Name
 		}
-		procs := topKeys(h.Procs, 1)
+		procs := topN(h.Procs, 1)
 		proc := "-"
 		if len(procs) > 0 {
 			proc = procs[0]
@@ -1004,7 +1031,7 @@ func (m model) renderNotices(b *strings.Builder) {
 		switch n.Kind {
 		case "arp", "scan":
 			styles = append(styles, stErr)
-		case "inbound":
+		case "inbound", "device":
 			styles = append(styles, stWarn)
 		default:
 			styles = append(styles, stDim)
@@ -1047,7 +1074,7 @@ func (m model) renderDetail() string {
 				rdns = stDim.Render("(resolving…)")
 			}
 		}
-		names := topKeys(h.Names, 3)
+		names := topN(h.Names, 3)
 		nameStr := stDim.Render("none")
 		if len(names) > 0 {
 			nameStr = strings.Join(names, ", ")
@@ -1066,7 +1093,7 @@ func (m model) renderDetail() string {
 		if h.TTL != 0 {
 			extra += "    " + ttlExplain(h.TTL)
 		}
-		procs := topKeys(h.Procs, 4)
+		procs := topN(h.Procs, 4)
 		procStr := stDim.Render("unknown")
 		if len(procs) > 0 {
 			procStr = strings.Join(procs, ", ")
@@ -1221,7 +1248,7 @@ func addrPort(ip netip.Addr, port uint16) string {
 }
 
 func portList(m map[uint16]uint64, n int) string {
-	ps := topPorts(m, n)
+	ps := topN(m, n)
 	var parts []string
 	for _, p := range ps {
 		parts = append(parts, fmt.Sprint(p))
@@ -1234,7 +1261,7 @@ func portList(m map[uint16]uint64, n int) string {
 
 func protoList(m map[string]uint64) string {
 	var parts []string
-	for _, k := range topKeys(m, 6) {
+	for _, k := range topN(m, 6) {
 		parts = append(parts, fmt.Sprintf("%s %s", k, humanCount(m[k])))
 	}
 	return strings.Join(parts, ", ")
@@ -1302,6 +1329,8 @@ func (m model) askClaude() (tea.Model, tea.Cmd) {
 		title, prompt = m.aiPacket(m.pkts[m.cursor])
 	case m.view == viewNotices && m.cursor < len(m.notices):
 		title, prompt = m.aiNotice(m.notices[m.cursor])
+	case m.view == viewDNS && m.cursor < len(m.dns):
+		title, prompt = m.aiDNS(m.dns[m.cursor])
 	case m.view == viewMap && m.mapSel != "":
 		title, prompt = m.aiMapObject(m.mapSel)
 	case m.view == viewMap:
@@ -1418,4 +1447,36 @@ func (m *model) moveMapSelSide(dir int) {
 	if best != "" {
 		m.mapSel = best
 	}
+}
+
+// observeDevices records LAN devices in the device book every few seconds,
+// whichever view is open, and announces ones never seen before.
+func (m *model) observeDevices(now time.Time) {
+	if m.book == nil || now.Sub(m.observed) < 5*time.Second {
+		return
+	}
+	m.observed = now
+	tv := m.tv
+	if m.view != viewMap {
+		tv = m.topo.View(m.iface, false)
+	}
+	router, devs := m.buildDevices(tv)
+	if router != nil {
+		devs = append(devs, *router)
+	}
+	for _, d := range devs {
+		if !m.book.Observe(now, d.MAC, d.IPs, d.Name, d.Vendor) || d.Self {
+			continue
+		}
+		what := firstNonEmpty(d.Name, d.Vendor)
+		if d.Private {
+			what = firstNonEmpty(d.Name, "random MAC")
+		}
+		ip := ""
+		if len(d.IPs) > 0 {
+			ip = d.IPs[0].String() + " "
+		}
+		m.agg.AddNotice("device", fmt.Sprintf("new device: %s%s (%s)", ip, firstNonEmpty(what, "unknown"), d.MAC))
+	}
+	_ = m.book.SaveIfDue(now, false)
 }

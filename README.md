@@ -28,7 +28,7 @@ With no flags, `ears` captures on the interface that carries the default route.
 
 ## Views
 
-Six views, switched with `Tab` or `1` to `6`. Press `?` in the app for the
+Seven views, switched with `Tab` or `1` to `7`. Press `?` in the app for the
 full key and column reference.
 
 | View    | One row per                  | What it adds                                                                       |
@@ -36,6 +36,7 @@ full key and column reference.
 | Flows   | remote ip:port to local port | process, server name, handshake RTT, TTL; `t` opens a timeline                     |
 | Hosts   | remote address               | totals, top ports, processes, best name, origin                                    |
 | Packets | captured frame, newest first | TCP flags, TLS server name, HTTP request, DNS; `Enter` decodes                     |
+| DNS     | name looked up               | lookup count, answers, network behind them, program; `Enter` for details           |
 | Stats   | (charts)                     | 60 s bandwidth sparklines, bytes by protocol, port, process, country, organisation |
 | Map     | (diagram)                    | the router, LAN devices, Wi-Fi link and every hop to the internet                  |
 | Notices | event                        | first traffic to a country, inbound connections, port scans, ARP changes           |
@@ -80,6 +81,18 @@ first 2048 bytes of each frame are kept.
 payload size and relative sequence numbers. The handshake, the round trip and
 the close are labelled. Each flow records its first 200 packets.
 
+### DNS
+
+The DNS tab lists every name this machine looked up: how often, what it
+resolved to, the network behind the answer, and the program that asked when
+`ears` can tell. Failed lookups show in red. `s` sorts by last seen, count or
+name.
+
+With systemd-resolved, programs send lookups to `127.0.0.53` over loopback,
+so `ears` also watches `lo` for DNS and logs every lookup, cache hits
+included. The tab header says which source it is using. Program names often
+show `-`, because resolver sockets close within milliseconds.
+
 ### Map
 
 The Map tab draws the network this machine sits on, top to bottom: the
@@ -122,6 +135,15 @@ to follow it. `Enter` opens the selected item's details:
 
 `a` asks Claude about the selected item and `A` about the whole map.
 
+### Known devices
+
+`ears` remembers LAN devices in `~/.local/share/ears/devices.json`: name,
+addresses, maker, and when it first and last saw each one. Names learned once
+stay on the map in later runs, and a device it has never seen raises a
+`device` notice. On the first run it learns the network quietly for two
+minutes. `-devices none` turns this off; `-devices path` stores the file
+elsewhere.
+
 ### Notices
 
 | Kind      | Raised when                                                                         |
@@ -130,6 +152,7 @@ to follow it. `Enter` opens the selected item's details:
 | `inbound` | a public address sends a TCP SYN to this machine, at most once a minute per address |
 | `scan`    | one address reaches 10 different local ports within 5 seconds                       |
 | `arp`     | an IP address is claimed by a different MAC than before                             |
+| `device`  | a LAN device appears that the known-devices file has never seen                     |
 
 The newest notice also shows in the header for a minute. A changed MAC is
 normal after replacing a router or device. Otherwise it can mean ARP spoofing.
@@ -219,6 +242,12 @@ most of what a laptop talks to is a CDN node in or near your country, whatever
 company is behind it. A residential address resolves to the ISP's nearest
 hub, which can be a city away from the subscriber. Treat the result as "which
 network, roughly where", never as a street.
+
+## Memory
+
+Memory stays flat on long runs. Flows expire after 10 idle minutes and hosts
+after 30, with caps of 8,192 flows and 4,096 hosts; learned names and the DNS
+log expire after an hour. Two hours of constant churn settle at about 20 MB.
 
 ## What this machine can and cannot see
 

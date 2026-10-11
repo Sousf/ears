@@ -94,10 +94,10 @@ func (m model) aiHost(h Host) (title, prompt string) {
 	b.WriteString("Selected item: one remote host, with all its traffic to and from this computer summed.\n")
 	b.WriteString(m.hostFacts(h.IP))
 	if len(h.Names) > 0 {
-		fmt.Fprintf(&b, "Server names seen for it: %s.\n", strings.Join(topKeys(h.Names, 8), ", "))
+		fmt.Fprintf(&b, "Server names seen for it: %s.\n", strings.Join(topN(h.Names, 8), ", "))
 	}
 	if len(h.Procs) > 0 {
-		fmt.Fprintf(&b, "Local processes that talked to it: %s.\n", strings.Join(topKeys(h.Procs, 6), ", "))
+		fmt.Fprintf(&b, "Local processes that talked to it: %s.\n", strings.Join(topN(h.Procs, 6), ", "))
 	}
 	if h.MAC != "" {
 		fmt.Fprintf(&b, "MAC address (from ARP): %s.\n", h.MAC)
@@ -106,12 +106,12 @@ func (m model) aiHost(h Host) (title, prompt string) {
 	fmt.Fprintf(&b, "Protocols (packets): %s.\n", protoList(h.Protos))
 	if len(h.Ports) > 0 {
 		var ps []string
-		for _, p := range topPorts(h.Ports, 8) {
+		for _, p := range topN(h.Ports, 8) {
 			ps = append(ps, portLabel(p))
 		}
 		fmt.Fprintf(&b, "Ports on the remote side: %s.\n", strings.Join(ps, ", "))
 		ps = ps[:0]
-		for _, p := range topPorts(h.LocalPorts, 8) {
+		for _, p := range topN(h.LocalPorts, 8) {
 			ps = append(ps, portLabel(p))
 		}
 		fmt.Fprintf(&b, "Ports on this computer: %s.\n", strings.Join(ps, ", "))

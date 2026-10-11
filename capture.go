@@ -219,7 +219,9 @@ func decode(data []byte, lt layers.LinkType, ci gopacket.CaptureInfo, opts gopac
 			var d layers.DNS
 			if err := d.DecodeFromBytes(tl.Payload, gopacket.NilDecodeFeedback); err == nil {
 				p.Info = dnsInfo(&d)
-				p.DNS = dnsAddrs(&d)
+				if p.SPort == 53 || p.DPort == 53 {
+					p.DNS = dnsMsg(&d)
+				}
 				if p.SPort == 5353 && d.QR {
 					p.LANName = mdnsNames(&d)
 				}
@@ -262,27 +264,30 @@ func toAddr(b []byte) netip.Addr {
 	return a.Unmap()
 }
 
+// flagNames holds every combination of the six TCP flags, built once so
+// labelling a packet allocates nothing.
+var flagNames = func() (t [64]string) {
+	names := []string{"SYN", "ACK", "PSH", "FIN", "RST", "URG"}
+	for bits := range t {
+		var f []string
+		for i, n := range names {
+			if bits&(1<<i) != 0 {
+				f = append(f, n)
+			}
+		}
+		t[bits] = strings.Join(f, ",")
+	}
+	return t
+}()
+
 func tcpFlags(t *layers.TCP) string {
-	var f []string
-	if t.SYN {
-		f = append(f, "SYN")
+	bits := 0
+	for i, set := range []bool{t.SYN, t.ACK, t.PSH, t.FIN, t.RST, t.URG} {
+		if set {
+			bits |= 1 << i
+		}
 	}
-	if t.ACK {
-		f = append(f, "ACK")
-	}
-	if t.PSH {
-		f = append(f, "PSH")
-	}
-	if t.FIN {
-		f = append(f, "FIN")
-	}
-	if t.RST {
-		f = append(f, "RST")
-	}
-	if t.URG {
-		f = append(f, "URG")
-	}
-	return strings.Join(f, ",")
+	return flagNames[bits]
 }
 
 func dnsInfo(d *layers.DNS) string {
@@ -314,23 +319,30 @@ func dnsInfo(d *layers.DNS) string {
 	return s
 }
 
-// dnsAddrs extracts the addresses a reply resolved the queried name to.
-func dnsAddrs(d *layers.DNS) *DNSReply {
-	if !d.QR || len(d.Questions) == 0 {
+// dnsMsg summarises a unicast DNS query or reply for the DNS log.
+func dnsMsg(d *layers.DNS) *DNSMsg {
+	if len(d.Questions) == 0 {
 		return nil
 	}
-	r := &DNSReply{Query: string(d.Questions[0].Name)}
+	q := d.Questions[0]
+	m := &DNSMsg{Reply: d.QR, Name: strings.TrimSuffix(string(q.Name), "."), Type: q.Type.String()}
+	if !d.QR {
+		return m
+	}
+	if d.ResponseCode != layers.DNSResponseCodeNoErr {
+		m.Rcode = d.ResponseCode.String()
+	}
 	for _, a := range d.Answers {
-		if a.IP != nil {
+		switch {
+		case a.IP != nil:
 			if ip := toAddr(a.IP); ip.IsValid() {
-				r.Addrs = append(r.Addrs, ip)
+				m.Addrs = append(m.Addrs, ip)
 			}
+		case len(a.CNAME) > 0:
+			m.CNAMEs = append(m.CNAMEs, string(a.CNAME))
 		}
 	}
-	if len(r.Addrs) == 0 {
-		return nil
-	}
-	return r
+	return m
 }
 
 // mdnsNames lists the .local names an mDNS response announces for addresses.

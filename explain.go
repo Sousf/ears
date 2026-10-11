@@ -38,10 +38,19 @@ type aiMsg struct {
 // Start runs the request in the background and returns a channel of chunks,
 // closed after a message with done set.
 func (e *Explainer) Start(ctx context.Context, id int, question string) <-chan aiMsg {
+	return startStream(ctx, id, func(emit func(string)) error { return e.stream(ctx, question, emit) })
+}
+
+// declinedNote ends an answer the model refused partway.
+const declinedNote = "\n\n[declined]"
+
+// startStream runs one backend request in the background and delivers its
+// text as aiMsg chunks, closing the channel after a final done message.
+func startStream(ctx context.Context, id int, run func(emit func(string)) error) <-chan aiMsg {
 	ch := make(chan aiMsg, 64)
 	go func() {
 		defer close(ch)
-		err := e.stream(ctx, question, func(s string) {
+		err := run(func(s string) {
 			select {
 			case ch <- aiMsg{id: id, text: s}:
 			case <-ctx.Done():
@@ -84,7 +93,7 @@ func (e *Explainer) stream(ctx context.Context, question string, emit func(strin
 		return explainErr(err)
 	}
 	if refused {
-		emit("\n\n[declined]")
+		emit(declinedNote)
 	}
 	return nil
 }

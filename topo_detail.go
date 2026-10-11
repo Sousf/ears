@@ -177,6 +177,11 @@ func (m model) deviceRows(d mapDevice) []kv2 {
 		{"maker", maker},
 		{"OS hint", d.Hint},
 	}
+	if m.book != nil {
+		if k, ok := m.book.Get(d.MAC); ok {
+			rows = append(rows, kv2{"first seen", k.First.Format("2006-01-02 15:04")})
+		}
+	}
 	if d.Self {
 		rows = append(rows, kv2{"role", "this machine, " + tv.Iface})
 		if len(tv.DNS) > 0 {
@@ -189,7 +194,7 @@ func (m model) deviceRows(d mapDevice) []kv2 {
 				byProc[f.Proc] += f.Bytes()
 			}
 		}
-		for _, p := range topKeys(byProc, 5) {
+		for _, p := range topN(byProc, 5) {
 			procs = append(procs, fmt.Sprintf("%s %s", p, humanBytes(byProc[p])))
 		}
 		rows = append(rows, kv2{"programs", strings.Join(procs, ", ")})
@@ -321,10 +326,10 @@ func (m model) inetRows() []kv2 {
 	}
 	rows = append(rows, kv2{"traffic", fmt.Sprintf("↓%s ↑%s", humanBytes(in), humanBytes(out))})
 	var orgs, countries []string
-	for _, k := range topKeys(byOrg, 6) {
+	for _, k := range topN(byOrg, 6) {
 		orgs = append(orgs, fmt.Sprintf("%s %s", k, humanBytes(byOrg[k])))
 	}
-	for _, k := range topKeys(byCountry, 6) {
+	for _, k := range topN(byCountry, 6) {
 		countries = append(countries, fmt.Sprintf("%s %s", k, humanBytes(byCountry[k])))
 	}
 	rows = append(rows, kv2{"networks", strings.Join(orgs, ", ")}, kv2{"countries", strings.Join(countries, ", ")})

@@ -127,7 +127,7 @@ func spark(vals []uint64, width int) string {
 // barList renders a titled horizontal bar chart of the top n entries.
 func barList(title string, m map[string]uint64, width, n int) []string {
 	lines := []string{stSection.Render(title)}
-	keys := topKeys(m, n)
+	keys := topN(m, n)
 	if len(keys) == 0 {
 		return append(lines, stDim.Render("  (nothing yet)"), "")
 	}
@@ -276,7 +276,7 @@ func helpLines() []string {
 	h := func(s string) string { return stSection.Render(s) }
 	return []string{
 		h("Keys"),
-		"  tab 1-6   switch view      ↑↓ j k    move          /   search",
+		"  tab 1-7   switch view      ↑↓ j k    move          /   search",
 		"  s         sort             d         direction     i   inbound only",
 		"  enter     details/decode   t         timeline      a   ask Claude (-ai)",
 		"  u         retrace (Map)    A         ask about map p   pause    r reset    q quit",
@@ -285,6 +285,7 @@ func helpLines() []string {
 		"  Flows     conversations",
 		"  Hosts     remote addresses",
 		"  Packets   frames, newest first",
+		"  DNS       names looked up, by count and program",
 		"  Stats     bandwidth and breakdowns",
 		"  Notices   new countries, inbound connections, scans, ARP changes",
 		"  Map       LAN, router and route to the internet; ←→ move between boxes",

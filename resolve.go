@@ -24,7 +24,15 @@ type HostInfo struct {
 	ASN     string
 	NameOK  bool // reverse DNS attempted
 	GeoOK   bool // geo lookup finished (or not applicable)
+	used    time.Time
 }
+
+// cacheIdle is how long an address stays cached after it was last displayed;
+// maxCache bounds the cache during bursts of new addresses.
+const (
+	cacheIdle = 30 * time.Minute
+	maxCache  = 2 * maxHosts
+)
 
 // Origin is a one-line description of where the address comes from.
 func (h HostInfo) Origin() string {
@@ -52,27 +60,30 @@ func (h HostInfo) Origin() string {
 }
 
 type Resolver struct {
-	mu     sync.Mutex
-	cache  map[netip.Addr]*HostInfo
-	queue  chan netip.Addr
-	webQ   chan netip.Addr
-	online bool
-	city   *geoip2.Reader
-	asn    *geoip2.Reader
-	isLAN  func(netip.Addr) bool // broadcast detection from Agg
-	client *http.Client
+	mu        sync.Mutex
+	cache     map[netip.Addr]*HostInfo
+	countries map[string]bool                                 // countries already announced
+	onCountry func(country string, ip netip.Addr, org string) // first traffic with a country
+	queue     chan netip.Addr
+	webQ      chan netip.Addr
+	online    bool
+	city      *geoip2.Reader
+	asn       *geoip2.Reader
+	isLAN     func(netip.Addr) bool // broadcast detection from Agg
+	client    *http.Client
 }
 
 var cgnat = netip.MustParsePrefix("100.64.0.0/10")
 
 func NewResolver(online bool, cityDB, asnDB string, isBroadcast func(netip.Addr) bool) (*Resolver, error) {
 	r := &Resolver{
-		cache:  map[netip.Addr]*HostInfo{},
-		queue:  make(chan netip.Addr, 8192),
-		webQ:   make(chan netip.Addr, 4096),
-		online: online,
-		isLAN:  isBroadcast,
-		client: &http.Client{Timeout: 6 * time.Second},
+		cache:     map[netip.Addr]*HostInfo{},
+		countries: map[string]bool{},
+		queue:     make(chan netip.Addr, 8192),
+		webQ:      make(chan netip.Addr, 4096),
+		online:    online,
+		isLAN:     isBroadcast,
+		client:    &http.Client{Timeout: 6 * time.Second},
 	}
 	var err error
 	if cityDB != "" {
@@ -91,7 +102,46 @@ func NewResolver(online bool, cityDB, asnDB string, isBroadcast func(netip.Addr)
 	if online {
 		go r.webWorker()
 	}
+	go r.pruneLoop()
 	return r, nil
+}
+
+// pruneLoop drops addresses nobody has looked at for cacheIdle.
+func (r *Resolver) pruneLoop() {
+	for range time.Tick(time.Minute) {
+		r.prune(time.Now())
+	}
+}
+
+func (r *Resolver) prune(now time.Time) {
+	r.mu.Lock()
+	for ip, hi := range r.cache {
+		if now.Sub(hi.used) > cacheIdle {
+			delete(r.cache, ip)
+		}
+	}
+	r.mu.Unlock()
+}
+
+// ResetCountries forgets which countries were announced.
+func (r *Resolver) ResetCountries() {
+	r.mu.Lock()
+	clear(r.countries)
+	r.mu.Unlock()
+}
+
+// noteCountry announces the first address seen from a country. Call without r.mu held.
+func (r *Resolver) noteCountry(ip netip.Addr) {
+	r.mu.Lock()
+	hi, ok := r.cache[ip]
+	if !ok || hi.Country == "" || r.countries[hi.Country] || r.onCountry == nil {
+		r.mu.Unlock()
+		return
+	}
+	r.countries[hi.Country] = true
+	country, org := hi.Country, firstNonEmpty(hi.Org, hi.ASN)
+	r.mu.Unlock()
+	r.onCountry(country, ip, org)
 }
 
 func (r *Resolver) Close() {
@@ -133,34 +183,36 @@ func (r *Resolver) Enqueue(ip netip.Addr) {
 		r.mu.Unlock()
 		return
 	}
-	hi := &HostInfo{Kind: r.classify(ip)}
+	hi := &HostInfo{Kind: r.classify(ip), used: time.Now()}
 	public := hi.Kind == "public"
+	hi.GeoOK = true
 	if public {
 		r.geoLookup(ip, hi)
 		hi.GeoOK = !r.online || (hi.Country != "" && hi.Org != "")
-	} else {
-		hi.GeoOK = true
 	}
+	// Reverse DNS for everything routable; skip multicast/broadcast noise.
+	wantName := public || hi.Kind == "LAN" || hi.Kind == "tailscale/CGNAT"
+	hi.NameOK = !wantName
+	wantWeb := public && r.online && !hi.GeoOK
 	r.cache[ip] = hi
+	trimOldest(r.cache, maxCache, func(h *HostInfo) time.Time { return h.used })
 	r.mu.Unlock()
 
-	// Reverse DNS for everything routable; skip multicast/broadcast noise.
-	if hi.Kind == "public" || hi.Kind == "LAN" || hi.Kind == "tailscale/CGNAT" {
+	if wantName {
 		select {
 		case r.queue <- ip:
 		default:
 			r.set(ip, func(h *HostInfo) { h.NameOK = true })
 		}
-	} else {
-		hi.NameOK = true
 	}
-	if public && r.online && !hi.GeoOK {
+	if wantWeb {
 		select {
 		case r.webQ <- ip:
 		default:
 			r.set(ip, func(h *HostInfo) { h.GeoOK = true })
 		}
 	}
+	r.noteCountry(ip)
 }
 
 // Get returns a copy of what is known (zero value if nothing).
@@ -168,6 +220,7 @@ func (r *Resolver) Get(ip netip.Addr) HostInfo {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if hi, ok := r.cache[ip]; ok {
+		hi.used = time.Now()
 		return *hi
 	}
 	return HostInfo{Kind: r.classify(ip)}
@@ -244,6 +297,7 @@ func (r *Resolver) webWorker() {
 			}
 			h.GeoOK = true
 		})
+		r.noteCountry(ip)
 	}
 }
 

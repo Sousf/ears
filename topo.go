@@ -122,8 +122,9 @@ type TopoView struct {
 	DNS        []netip.Addr
 }
 
-// View reads the routing and neighbour tables and returns a snapshot.
-func (t *Topo) View(iface string) TopoView {
+// View reads the routing and neighbour tables and returns a snapshot. With
+// extras it also refreshes Wi-Fi and Tailscale details in the background.
+func (t *Topo) View(iface string, extras bool) TopoView {
 	v := TopoView{Iface: iface, Gateway: t.defaultGateway(iface), ARP: t.readARP()}
 	v.Hostname, _ = os.Hostname()
 	if ifc, err := net.InterfaceByName(iface); err == nil {
@@ -158,11 +159,11 @@ func (t *Topo) View(iface string) TopoView {
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if v.Wireless && !t.offline && !t.wifiBusy && time.Since(t.wifiAt) > 15*time.Second {
+	if extras && v.Wireless && !t.offline && !t.wifiBusy && time.Since(t.wifiAt) > 15*time.Second {
 		t.wifiBusy = true
 		go t.loadWiFi(iface)
 	}
-	if !t.offline && !t.tsBusy && time.Since(t.tsAt) > 15*time.Second {
+	if extras && !t.offline && !t.tsBusy && time.Since(t.tsAt) > 15*time.Second {
 		t.tsBusy = true
 		go t.loadTailscale()
 	}
@@ -242,32 +243,45 @@ func (t *Topo) readARP() []ARPEntry {
 	return out
 }
 
-// dnsServers lists the resolvers this machine uses. With systemd-resolved,
-// /etc/resolv.conf only names the local stub, so the real list is elsewhere.
-func dnsServers() []netip.Addr {
-	read := func(path string) []netip.Addr {
-		b, err := os.ReadFile(path)
-		if err != nil {
-			return nil
-		}
-		var out []netip.Addr
-		for _, line := range strings.Split(string(b), "\n") {
-			f := strings.Fields(line)
-			if len(f) >= 2 && f[0] == "nameserver" {
-				if ip, err := netip.ParseAddr(f[1]); err == nil {
-					out = append(out, ip)
-				}
+// nameservers lists the nameserver lines of a resolv.conf file.
+func nameservers(path string) []netip.Addr {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var out []netip.Addr
+	for _, line := range strings.Split(string(b), "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 2 && f[0] == "nameserver" {
+			if ip, err := netip.ParseAddr(f[1]); err == nil {
+				out = append(out, ip)
 			}
 		}
-		return out
 	}
-	s := read("/etc/resolv.conf")
-	if len(s) == 1 && s[0].IsLoopback() {
-		if r := read("/run/systemd/resolve/resolv.conf"); len(r) > 0 {
-			return r
+	return out
+}
+
+// usesStub reports whether every lookup goes to a local caching resolver,
+// such as systemd-resolved on 127.0.0.53.
+func usesStub() bool {
+	ns := nameservers("/etc/resolv.conf")
+	for _, ip := range ns {
+		if !ip.IsLoopback() {
+			return false
 		}
 	}
-	return s
+	return len(ns) > 0
+}
+
+// dnsServers lists the resolvers this machine really uses: behind a local
+// stub, systemd-resolved keeps the upstream list in a separate file.
+func dnsServers() []netip.Addr {
+	if usesStub() {
+		if up := nameservers("/run/systemd/resolve/resolv.conf"); len(up) > 0 {
+			return up
+		}
+	}
+	return nameservers("/etc/resolv.conf")
 }
 
 // ---- MAC vendors ----

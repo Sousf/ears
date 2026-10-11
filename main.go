@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -25,6 +26,7 @@ func main() {
 	asn := flag.String("asn", "", "ASN .mmdb (default ~/.local/share/ears/asn.mmdb)")
 	writeTo := flag.String("w", "", "save frames to a pcap file")
 	noProc := flag.Bool("no-proc", false, "skip process lookup")
+	devFile := flag.String("devices", "", "known-devices file, \"none\" to disable (default ~/.local/share/ears/devices.json)")
 	ai := flag.Bool("ai", false, "enable Ask Claude (a key)")
 	aiBackend := flag.String("ai-backend", "auto", "auto, api or claude-code")
 	traceTo := flag.String("trace", "1.1.1.1", "Map trace target")
@@ -76,6 +78,9 @@ func main() {
 	}
 	defer res.Close()
 	agg.kindOf = func(ip netip.Addr) string { return res.Get(ip).Kind }
+	res.onCountry = func(country string, ip netip.Addr, org string) {
+		agg.AddNotice("country", fmt.Sprintf("first traffic with %s: %s (%s)", country, ip, firstNonEmpty(org, "unknown")))
+	}
 	if !*noProc {
 		agg.procs = NewProcTable()
 	}
@@ -86,6 +91,22 @@ func main() {
 	errs := make(chan error, 1)
 	go cap.Run(ctx, packets, errs)
 	defer cap.Close()
+
+	// With a local caching resolver, programs' lookups go over loopback and
+	// never reach the capture interface. Watch them there for the DNS log.
+	if *iface != "lo" && usesStub() {
+		stub := &Capture{Iface: "lo", Filter: "udp port 53", SnapLen: 1500}
+		if stub.Open() == nil {
+			stubPkts := make(chan Packet, 1024)
+			go stub.Run(ctx, stubPkts, make(chan error, 1))
+			defer stub.Close()
+			go func() {
+				for p := range stubPkts {
+					agg.AddStubDNS(p)
+				}
+			}()
+		}
+	}
 	go func() {
 		for p := range packets {
 			agg.Add(p)
@@ -94,6 +115,19 @@ func main() {
 
 	m := newModel(agg, res, cap, errs, *iface, *filter)
 	m.topo = NewTopo(*traceTo)
+	defer m.topo.StopTrace()
+	switch *devFile {
+	case "none":
+		*devFile = ""
+	case "":
+		*devFile = data + "/devices.json"
+	}
+	book, err := LoadDeviceBook(*devFile)
+	if err != nil {
+		fatal(fmt.Errorf("devices file: %w", err))
+	}
+	m.book = book
+	defer func() { _ = book.SaveIfDue(time.Now(), true) }()
 	m.autoTrace = !*noTrace
 	if *ai {
 		modelSet := false

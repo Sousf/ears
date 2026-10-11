@@ -166,7 +166,7 @@ func TestLANNamesAndMACs(t *testing.T) {
 
 	agg, res := testAgg(t)
 	feed(t, agg, mdnsFrame(t), dhcpFrame(t))
-	s := agg.Snapshot()
+	s := agg.Snapshot(SnapOpts{Packets: true, DNS: true})
 	if s.LANNames[netip.MustParseAddr("192.168.1.50")] != "Living-Room-TV.local" {
 		t.Fatalf("lan names: %v", s.LANNames)
 	}
@@ -227,11 +227,11 @@ func TestMapRender(t *testing.T) {
 	for _, size := range [][2]int{{40, 20}, {80, 30}, {130, 50}, {220, 60}} {
 		mm, _ := m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
 		m = mm.(model)
-		mm, _ = m.Update(key("6"))
+		mm, _ = m.Update(key("7"))
 		m = mm.(model)
-		m.tv = m.topo.View("wlan0")
+		m.tv = m.topo.View("wlan0", true)
 		m.tv.ARP, m.tv.Gateway, m.tv.Subnet, m.tv.Wireless = arp, netip.MustParseAddr("192.168.1.1"), netip.MustParsePrefix("192.168.1.0/24"), true
-		lines := m.mapLines()
+		lines, _ := m.mapLayout()
 		joined := strings.Join(lines, "\n")
 		for _, l := range lines {
 			if w := lipgloss.Width(l); w > max(size[0], 40) {
@@ -300,7 +300,7 @@ func TestFitColoured(t *testing.T) {
 			t.Fatalf("truncLine w=%d: %q", w, l)
 		}
 	}
-	box := drawBox([]string{s, "short"}, 22, stMapDev, 11, -1)
+	box := drawBox([]string{s, "short"}, 22, stMapDev, 11, -1, false)
 	for _, l := range box {
 		if lipgloss.Width(l) != 22 || strings.Contains(stripANSI(l), "\x1b") {
 			t.Fatalf("box line %q is %d wide", l, lipgloss.Width(l))
@@ -316,10 +316,10 @@ func TestMapSelection(t *testing.T) {
 	m.topo.tailscale = []TSPeer{{Name: "me", Self: true, Online: true, Public: netip.MustParseAddr("120.148.41.212")}, {Name: "nas", Online: true, Relay: "syd"}}
 	mm, _ := m.Update(tea.WindowSizeMsg{Width: 130, Height: 30})
 	m = mm.(model)
-	mm, _ = m.Update(key("6"))
+	mm, _ = m.Update(key("7"))
 	m = mm.(model)
 	fixTV := func() {
-		m.tv = m.topo.View("wlan0")
+		m.tv = m.topo.View("wlan0", true)
 		m.tv.Gateway, m.tv.Subnet, m.tv.Iface = netip.MustParseAddr("192.168.1.1"), netip.MustParsePrefix("192.168.1.0/24"), "wlan0"
 		m.tv.LocalIP, m.tv.LocalMAC = netip.MustParseAddr("192.168.1.117"), "04:e8:b9:48:29:f2"
 		m.tv.ARP = []ARPEntry{{IP: netip.MustParseAddr("192.168.1.1"), MAC: "78:20:51:81:77:5f", Iface: "wlan0"}, {IP: netip.MustParseAddr("192.168.1.11"), MAC: "9c:7b:ef:4e:d7:f6", Iface: "wlan0"}}
@@ -437,5 +437,23 @@ func TestArrowsDoNotSwitchViews(t *testing.T) {
 	m = mm.(model)
 	if m.view != viewFlows {
 		t.Fatalf("shift+tab: %s", m.view)
+	}
+}
+
+func TestFooterHasNoDuplicateKeys(t *testing.T) {
+	agg, res := testAgg(t)
+	m := newModel(agg, res, &Capture{}, make(chan error), "wlan0", "")
+	m.w = 400
+	for v := view(0); v < viewCount; v++ {
+		m.view = v
+		seen := map[string]bool{}
+		for _, f := range strings.Fields(stripANSI(m.renderFooter())) {
+			if len([]rune(f)) <= 5 && strings.ContainsAny(f, "qtpr?/") && len(f) <= 3 {
+				if seen[f] {
+					t.Fatalf("view %s: key %q listed twice: %s", v, f, stripANSI(m.renderFooter()))
+				}
+				seen[f] = true
+			}
+		}
 	}
 }

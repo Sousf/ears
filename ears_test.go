@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -127,12 +128,12 @@ func TestDecode(t *testing.T) {
 	}
 	f = dnsFrame(t, "192.168.1.117", "1.1.1.1", false)
 	p, ok = decode(f, layers.LinkTypeEthernet, ci(len(f)), opts)
-	if !ok || p.Proto != "UDP" || !strings.Contains(p.Info, "DNS query A example.com") || p.DNS != nil {
+	if !ok || p.Proto != "UDP" || !strings.Contains(p.Info, "DNS query A example.com") || p.DNS == nil || p.DNS.Reply || p.DNS.Name != "example.com" || p.DNS.Type != "A" {
 		t.Fatalf("bad dns decode: %+v ok=%v", p, ok)
 	}
 	f = dnsFrame(t, "1.1.1.1", "192.168.1.117", true)
 	p, _ = decode(f, layers.LinkTypeEthernet, ci(len(f)), opts)
-	if p.DNS == nil || p.DNS.Query != "example.com" || len(p.DNS.Addrs) != 1 || p.DNS.Addrs[0].String() != "203.0.113.5" {
+	if p.DNS == nil || p.DNS.Name != "example.com" || !p.DNS.Reply || len(p.DNS.Addrs) != 1 || p.DNS.Addrs[0].String() != "203.0.113.5" {
 		t.Fatalf("bad dns reply decode: %+v", p.DNS)
 	}
 	f = arpFrame(t, macA, []byte{192, 168, 1, 1}, []byte{192, 168, 1, 117})
@@ -203,7 +204,7 @@ func TestAggregateDirections(t *testing.T) {
 		dnsFrame(t, "192.168.1.117", "1.1.1.1", false),                         // outbound
 		tcpFrame(t, "192.168.1.50", "192.168.1.255", 1000, 2000, "", nil),      // LAN broadcast, not ours
 	)
-	s := agg.Snapshot()
+	s := agg.Snapshot(SnapOpts{Packets: true, DNS: true})
 	if s.Stats.Packets != 4 || s.Stats.PktsIn != 1 || s.Stats.PktsOut != 2 || s.Stats.PktsOther != 1 {
 		t.Fatalf("stats: %+v", s.Stats)
 	}
@@ -250,7 +251,7 @@ func TestAggregateDirections(t *testing.T) {
 		t.Fatalf("multicast classify: %s", got)
 	}
 	agg.Reset()
-	if s := agg.Snapshot(); s.Stats.Packets != 0 || len(s.Flows) != 0 || len(s.Packets) != 0 || len(s.Notices) != 0 {
+	if s := agg.Snapshot(SnapOpts{Packets: true, DNS: true}); s.Stats.Packets != 0 || len(s.Flows) != 0 || len(s.Packets) != 0 || len(s.Notices) != 0 {
 		t.Fatalf("reset failed: %+v", s.Stats)
 	}
 }
@@ -263,14 +264,14 @@ func TestNamesAndRTT(t *testing.T) {
 	feedAt(t, agg, t0.Add(10*time.Millisecond), tcpFrame(t, "192.168.1.117", "203.0.113.5", 40000, 443, "SYN", nil))
 	feedAt(t, agg, t0.Add(35*time.Millisecond), tcpFrame(t, "203.0.113.5", "192.168.1.117", 443, 40000, "SYN,ACK", nil))
 	feedAt(t, agg, t0.Add(36*time.Millisecond), tcpFrame(t, "192.168.1.117", "203.0.113.5", 40000, 443, "ACK", nil))
-	s := agg.Snapshot()
+	s := agg.Snapshot(SnapOpts{Packets: true, DNS: true})
 	f := findFlow(s, 40000)
 	if f == nil || f.Name != "example.com" || f.RTT != 25*time.Millisecond {
 		t.Fatalf("flow after dns: %+v", f)
 	}
 	// SNI overrides the DNS-learned name.
 	feedAt(t, agg, t0.Add(40*time.Millisecond), tcpFrame(t, "192.168.1.117", "203.0.113.5", 40000, 443, "PSH,ACK", clientHello("api.example.com")))
-	s = agg.Snapshot()
+	s = agg.Snapshot(SnapOpts{Packets: true, DNS: true})
 	f = findFlow(s, 40000)
 	if f.Name != "api.example.com" {
 		t.Fatalf("sni name: %q", f.Name)
@@ -288,7 +289,7 @@ func TestNamesAndRTT(t *testing.T) {
 	feedAt(t, agg, t0, tcpFrame(t, "198.51.100.9", "192.168.1.117", 5000, 22, "SYN", nil))
 	feedAt(t, agg, t0.Add(1*time.Millisecond), tcpFrame(t, "192.168.1.117", "198.51.100.9", 22, 5000, "SYN,ACK", nil))
 	feedAt(t, agg, t0.Add(81*time.Millisecond), tcpFrame(t, "198.51.100.9", "192.168.1.117", 5000, 22, "ACK", nil))
-	f = findFlow(agg.Snapshot(), 22)
+	f = findFlow(agg.Snapshot(SnapOpts{Packets: true, DNS: true}), 22)
 	if f == nil || f.RTT != 80*time.Millisecond {
 		t.Fatalf("inbound rtt: %+v", f)
 	}
@@ -311,7 +312,7 @@ func TestNotices(t *testing.T) {
 	// ARP: router changes MAC.
 	feedAt(t, agg, t0, arpFrame(t, macA, []byte{192, 168, 1, 1}, []byte{192, 168, 1, 117}))
 	feedAt(t, agg, t0.Add(time.Second), arpFrame(t, macB, []byte{192, 168, 1, 1}, []byte{192, 168, 1, 117}))
-	s := agg.Snapshot()
+	s := agg.Snapshot(SnapOpts{Packets: true, DNS: true})
 	var kinds []string
 	for _, n := range s.Notices {
 		kinds = append(kinds, n.Kind)
@@ -333,7 +334,7 @@ func TestBucketsAndSpark(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		feedAt(t, agg, now.Add(-time.Duration(i)*time.Second), tcpFrame(t, "203.0.113.5", "192.168.1.117", 443, 40000, "ACK", make([]byte, 100*(i+1))))
 	}
-	s := agg.Snapshot()
+	s := agg.Snapshot(SnapOpts{Packets: true, DNS: true})
 	if len(s.Buckets) != 60 {
 		t.Fatalf("buckets: %d", len(s.Buckets))
 	}
@@ -357,7 +358,7 @@ func TestRecentRing(t *testing.T) {
 	for i := 0; i < recentCap+10; i++ {
 		agg.Add(Packet{Time: time.Now(), Len: i, Proto: "TCP", Src: netip.MustParseAddr("203.0.113.5"), Dst: netip.MustParseAddr("192.168.1.117")})
 	}
-	s := agg.Snapshot()
+	s := agg.Snapshot(SnapOpts{Packets: true, DNS: true})
 	if len(s.Packets) != recentCap || s.Packets[0].Len != recentCap+9 || s.Packets[recentCap-1].Len != 10 {
 		t.Fatalf("ring order wrong: n=%d first=%d last=%d", len(s.Packets), s.Packets[0].Len, s.Packets[len(s.Packets)-1].Len)
 	}
@@ -594,7 +595,7 @@ func TestNoProcessForOverheard(t *testing.T) {
 	feed(t, agg, mdnsFrame(t))
 	// This machine sending mDNS: attributed.
 	agg.Add(Packet{Time: time.Now(), Len: 80, Proto: "UDP", Src: netip.MustParseAddr("192.168.1.117"), Dst: netip.MustParseAddr("224.0.0.251"), SPort: 5353, DPort: 5353})
-	for _, f := range agg.Snapshot().Flows {
+	for _, f := range agg.Snapshot(SnapOpts{Packets: true, DNS: true}).Flows {
 		switch f.Dir {
 		case DirOther:
 			if f.Proc != "" {
@@ -605,5 +606,117 @@ func TestNoProcessForOverheard(t *testing.T) {
 				t.Fatalf("own flow process: %q", f.Proc)
 			}
 		}
+	}
+}
+
+func TestDNSLog(t *testing.T) {
+	agg, _ := testAgg(t)
+	t0 := time.Now()
+	feedAt(t, agg, t0, dnsFrame(t, "192.168.1.117", "1.1.1.1", false))
+	feedAt(t, agg, t0.Add(time.Millisecond), dnsFrame(t, "1.1.1.1", "192.168.1.117", true))
+	feedAt(t, agg, t0.Add(time.Second), dnsFrame(t, "192.168.1.117", "1.1.1.1", false))
+	s := agg.Snapshot(SnapOpts{DNS: true})
+	if len(s.DNS) != 1 {
+		t.Fatalf("entries: %+v", s.DNS)
+	}
+	e := s.DNS[0]
+	if e.Name != "example.com" || e.Count != 2 || len(e.Answers) != 1 || e.Answers[0].String() != "203.0.113.5" || e.Types[0] != "A" {
+		t.Fatalf("entry: %+v", e)
+	}
+	if len(agg.Snapshot(SnapOpts{}).DNS) != 0 {
+		t.Fatal("DNS copied without being asked for")
+	}
+	// Once the loopback stub reports, interface DNS stops being counted (it is the resolver's upstream traffic).
+	q := Packet{Time: t0, DNS: &DNSMsg{Name: "stub.example", Type: "AAAA"}}
+	agg.AddStubDNS(q)
+	feedAt(t, agg, t0.Add(2*time.Second), dnsFrame(t, "192.168.1.117", "1.1.1.1", false))
+	s = agg.Snapshot(SnapOpts{DNS: true})
+	counts := map[string]int{}
+	for _, e := range s.DNS {
+		counts[e.Name] = e.Count
+	}
+	if !s.StubDNS || counts["stub.example"] != 1 || counts["example.com"] != 2 {
+		t.Fatalf("stub mode: %v stub=%v", counts, s.StubDNS)
+	}
+}
+
+// Two simulated hours of short connections to ever-new hosts must not grow
+// memory without bound.
+func TestPruneBoundsMemory(t *testing.T) {
+	agg, _ := testAgg(t)
+	start := time.Now().Add(-2 * time.Hour)
+	local := netip.MustParseAddr("192.168.1.117")
+	for i := 0; i < 60000; i++ {
+		ts := start.Add(time.Duration(i) * 120 * time.Millisecond)
+		remote := netip.AddrFrom4([4]byte{byte(20 + i%200), byte(i / 200 % 250), byte(i / 50000), byte(i % 251)})
+		agg.Add(Packet{Time: ts, Len: 100, Proto: "TCP", Src: local, Dst: remote, SPort: uint16(30000 + i%30000), DPort: 443, Flags: "ACK"})
+	}
+	agg.mu.Lock()
+	nf, nh, nc := len(agg.flows), len(agg.hosts), len(agg.hostCopies)
+	agg.mu.Unlock()
+	if nf > maxFlows || nh > maxHosts || nc > nh {
+		t.Fatalf("flows %d (max %d), hosts %d (max %d), host copies %d", nf, maxFlows, nh, maxHosts, nc)
+	}
+	// Idle entries expire on their own.
+	agg.Add(Packet{Time: start.Add(5 * time.Hour), Len: 100, Proto: "TCP", Src: local, Dst: netip.MustParseAddr("198.51.100.1"), SPort: 1, DPort: 443})
+	s := agg.Snapshot(SnapOpts{})
+	if len(s.Flows) != 1 || len(s.Hosts) != 1 {
+		t.Fatalf("after idle expiry: %d flows, %d hosts", len(s.Flows), len(s.Hosts))
+	}
+}
+
+// Unchanged hosts reuse their snapshot copy instead of being deep-copied again.
+func TestSnapshotReusesHostCopies(t *testing.T) {
+	agg, _ := testAgg(t)
+	feed(t, agg, tcpFrame(t, "203.0.113.5", "192.168.1.117", 443, 40000, "ACK", nil))
+	a := agg.Snapshot(SnapOpts{})
+	b := agg.Snapshot(SnapOpts{})
+	if reflect.ValueOf(a.Hosts[0].Ports).UnsafePointer() != reflect.ValueOf(b.Hosts[0].Ports).UnsafePointer() {
+		t.Fatal("unchanged host was copied again")
+	}
+	feed(t, agg, tcpFrame(t, "203.0.113.5", "192.168.1.117", 443, 40000, "ACK", nil))
+	c := agg.Snapshot(SnapOpts{})
+	if reflect.ValueOf(a.Hosts[0].Ports).UnsafePointer() == reflect.ValueOf(c.Hosts[0].Ports).UnsafePointer() || c.Hosts[0].PktsIn != 2 {
+		t.Fatal("changed host was not re-copied")
+	}
+}
+
+func TestDeviceBook(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "devices.json")
+	now := time.Now()
+	b, err := LoadDeviceBook(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ip := []netip.Addr{netip.MustParseAddr("192.168.1.11")}
+	if b.Observe(now, "9c:7b:ef:4e:d7:f6", ip, "", "Hewlett Packard") {
+		t.Fatal("first run should learn silently")
+	}
+	if !b.Observe(now.Add(3*time.Minute), "aa:bb:cc:00:00:01", nil, "", "") {
+		t.Fatal("new device after the grace period should be announced")
+	}
+	b.Observe(now, "9c:7b:ef:4e:d7:f6", ip, "hermes2", "")
+	if err := b.SaveIfDue(now, true); err != nil {
+		t.Fatal(err)
+	}
+	if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o600 {
+		t.Fatalf("file mode %v", fi.Mode().Perm())
+	}
+	b2, err := LoadDeviceBook(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	k, ok := b2.Get("9c:7b:ef:4e:d7:f6")
+	if !ok || k.Name != "hermes2" || k.Vendor != "Hewlett Packard" || k.IPs[0] != "192.168.1.11" {
+		t.Fatalf("reloaded: %+v", k)
+	}
+	if b2.Observe(now, "9c:7b:ef:4e:d7:f6", ip, "", "") {
+		t.Fatal("known device announced again")
+	}
+	if !b2.Observe(now, "aa:bb:cc:00:00:02", nil, "", "") {
+		t.Fatal("existing book should announce new devices at once")
+	}
+	if err := b2.SaveIfDue(now, false); err != nil {
+		t.Fatal(err)
 	}
 }

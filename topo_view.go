@@ -144,6 +144,11 @@ func (m model) buildDevices(tv TopoView) (router *mapDevice, devs []mapDevice) {
 			m.res.Enqueue(d.IPs[0])
 			d.Name = m.res.Get(d.IPs[0]).Name
 		}
+		if d.Name == "" && m.book != nil {
+			if k, ok := m.book.Get(d.MAC); ok {
+				d.Name = k.Name
+			}
+		}
 	}
 	for _, d := range byMAC {
 		if d.Router {
@@ -185,14 +190,10 @@ func osHint(vendorClass string) string {
 
 // ---- drawing primitives ----
 
-// drawBox returns a rounded box of display width w. join columns (relative to
-// the box, -1 for none) put ┴ in the top border and ┬ in the bottom one.
-func drawBox(body []string, w int, border lipgloss.Style, topJoin, botJoin int) []string {
-	return drawBoxSel(body, w, border, topJoin, botJoin, false)
-}
-
-// drawBoxSel draws a heavy, bright border when sel is set.
-func drawBoxSel(body []string, w int, border lipgloss.Style, topJoin, botJoin int, sel bool) []string {
+// drawBox returns a rounded box of display width w, heavy and bright when sel
+// is set. join columns (relative to the box, -1 for none) put a junction in
+// the top or bottom border.
+func drawBox(body []string, w int, border lipgloss.Style, topJoin, botJoin int, sel bool) []string {
 	if w < 6 {
 		w = 6
 	}
@@ -249,11 +250,6 @@ type mapObj struct {
 func devKey(d mapDevice) string { return "dev:" + d.MAC }
 
 // ---- the map ----
-
-func (m model) mapLines() []string {
-	lines, _ := m.mapLayout()
-	return lines
-}
 
 // mapLayout draws the map and records each selectable object's position.
 func (m model) mapLayout() ([]string, []mapObj) {
@@ -322,7 +318,7 @@ func (m model) mapLayout() ([]string, []mapObj) {
 	default:
 		inet = append(inet, stErr.Render(tv.TraceState))
 	}
-	inetBox := drawBoxSel(inet, boxW, stMapNet, -1, join, m.mapSel == "inet")
+	inetBox := drawBox(inet, boxW, stMapNet, -1, join, m.mapSel == "inet")
 	mark("inet", len(inetBox), boxLeft)
 	for _, l := range inetBox {
 		add(indent(boxLeft) + l)
@@ -485,7 +481,7 @@ func (m model) mapLayout() ([]string, []mapObj) {
 		}
 	}
 	renderSpine(spineTop, 0)
-	rbox := drawBoxSel(rbody, boxW, stMapRouter, join, join, m.mapSel == "router")
+	rbox := drawBox(rbody, boxW, stMapRouter, join, join, m.mapSel == "router")
 	mark("router", len(rbox), boxLeft)
 	for _, l := range rbox {
 		add(indent(boxLeft) + l)
@@ -676,7 +672,7 @@ func (m model) deviceBox(d mapDevice, bw int, sel bool) []string {
 	if d.Self {
 		traffic = stDim.Render(d.MAC)
 	}
-	return drawBoxSel([]string{dot + " " + stBold.Render(name), ip, maker, traffic}, bw, border, bw/2, -1, sel)
+	return drawBox([]string{dot + " " + stBold.Render(name), ip, maker, traffic}, bw, border, bw/2, -1, sel)
 }
 
 // sameDevice guesses whether two MACs belong to one box: routers number their

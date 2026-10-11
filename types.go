@@ -52,7 +52,7 @@ type Packet struct {
 	DstMAC  string     // Ethernet destination
 	LANName []NameAddr // names announced over mDNS
 	DHCP    *DHCPInfo  // hostname and vendor from a DHCP request
-	DNS     *DNSReply  // set on DNS replies carrying addresses
+	DNS     *DNSMsg    // set on unicast DNS (port 53) queries and replies
 	Raw     []byte     // copy of the frame, at most rawCap bytes
 }
 
@@ -78,9 +78,26 @@ type MacInfo struct {
 	Vendor    string // DHCP vendor class
 }
 
-type DNSReply struct {
-	Query string
-	Addrs []netip.Addr
+type DNSMsg struct {
+	Reply  bool
+	Name   string
+	Type   string
+	Rcode  string // "" for no error, else e.g. "Non-Existent Domain"
+	Addrs  []netip.Addr
+	CNAMEs []string
+}
+
+// DNSEntry is the DNS log's record of one queried name.
+type DNSEntry struct {
+	Name    string
+	Types   []string
+	Count   int // queries
+	Fails   int // error replies (no such domain, server failure)
+	First   time.Time
+	Last    time.Time
+	Answers []netip.Addr
+	CNAMEs  []string
+	Procs   []string
 }
 
 // FlowKey identifies a conversation between a remote endpoint and a local one.
@@ -95,14 +112,14 @@ type FlowKey struct {
 // FlowEvent is one packet of a flow, kept for the timeline view.
 type FlowEvent struct {
 	T     time.Time
-	Dir   Direction
-	Flags string
-	Len   int // payload bytes
-	Seq   uint32
+	Flags string // shares the static strings from tcpFlags
 	Note  string
+	Len   uint32 // payload bytes
+	Seq   uint32
+	Dir   Direction
 }
 
-const eventCap = 200
+const eventCap = 32
 
 type Flow struct {
 	Key      FlowKey
@@ -146,6 +163,7 @@ type Host struct {
 	TTL        uint8
 	Flows      int
 
+	gen          uint64      // bumped on every change; lets Snapshot reuse an unchanged copy
 	portHits     []time.Time // first-contact times of new local ports, for scan detection
 	scanNoticeAt time.Time
 	synNoticeAt  time.Time

@@ -51,18 +51,7 @@ type ccLine struct {
 }
 
 func (c *ClaudeCode) Start(ctx context.Context, id int, question string) <-chan aiMsg {
-	ch := make(chan aiMsg, 64)
-	go func() {
-		defer close(ch)
-		err := c.run(ctx, question, func(s string) {
-			select {
-			case ch <- aiMsg{id: id, text: s}:
-			case <-ctx.Done():
-			}
-		})
-		ch <- aiMsg{id: id, done: true, err: err}
-	}()
-	return ch
+	return startStream(ctx, id, func(emit func(string)) error { return c.run(ctx, question, emit) })
 }
 
 func (c *ClaudeCode) run(ctx context.Context, question string, emit func(string)) error {
@@ -129,7 +118,7 @@ func (c *ClaudeCode) run(ctx context.Context, question string, emit func(string)
 		emit(result.Result) // older CLIs without partial messages
 	}
 	if refused {
-		emit("\n\n[declined]")
+		emit(declinedNote)
 	}
 	return nil
 }
