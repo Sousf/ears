@@ -226,6 +226,9 @@ replay stays off:
 - reverse DNS for public addresses only, since private ones belong to the
   recorded network
 
+`testdata/demo.pcap` is a minute of made-up traffic on a documentation
+network. `go run ./cmd/demopcap` regenerates it.
+
 ## Where an address comes from
 
 Every address gets a kind: `LAN`, `public`, `loopback`, `multicast`,

@@ -138,3 +138,14 @@ func TestSiteOf(t *testing.T) {
 		t.Fatalf("direction not judged from the recording machine: %+v", f)
 	}
 }
+
+// The committed demo capture must keep describing the made-up site.
+func TestDemoPcap(t *testing.T) {
+	s, err := inferSite("testdata/demo.pcap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.LocalIP != netip.MustParseAddr("10.0.0.23") || s.Gateway != netip.MustParseAddr("10.0.0.1") {
+		t.Fatalf("demo site: %+v", s)
+	}
+}
