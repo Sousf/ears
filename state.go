@@ -221,7 +221,9 @@ func (a *Agg) add(p Packet) (newRemote netip.Addr) {
 			h.Names[p.Name]++
 		}
 	}
-	if f.Proc == "" && a.procs != nil {
+	// Overheard traffic (broadcast, multicast, mirrored) never belonged to a
+	// local socket, even when a program here listens on the same port.
+	if f.Proc == "" && a.procs != nil && p.Dir != DirOther {
 		if f.Proc = a.procs.Lookup(p.Proto, lport); f.Proc != "" {
 			h.Procs[f.Proc]++
 		}

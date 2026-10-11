@@ -575,3 +575,35 @@ func TestHumanFormats(t *testing.T) {
 		t.Fatalf("%s | %s", rttStr(25*time.Millisecond), ttlExplain(57))
 	}
 }
+
+// A local program listening on 5353 must not be credited with another
+// device's mDNS broadcast.
+func TestNoProcessForOverheard(t *testing.T) {
+	agg, _ := testAgg(t)
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "net"), 0o755)
+	os.MkdirAll(filepath.Join(root, "1500", "fd"), 0o755)
+	os.WriteFile(filepath.Join(root, "net", "udp"), []byte("hdr\n   0: 00000000:14E9 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 424242 2\n"), 0o644)
+	os.WriteFile(filepath.Join(root, "1500", "comm"), []byte("spotifyd\n"), 0o644)
+	os.Symlink("socket:[424242]", filepath.Join(root, "1500", "fd", "7"))
+	agg.procs = NewProcTable()
+	agg.procs.root = root
+	agg.procs.refresh()
+
+	// Another device's broadcast: overheard, no process.
+	feed(t, agg, mdnsFrame(t))
+	// This machine sending mDNS: attributed.
+	agg.Add(Packet{Time: time.Now(), Len: 80, Proto: "UDP", Src: netip.MustParseAddr("192.168.1.117"), Dst: netip.MustParseAddr("224.0.0.251"), SPort: 5353, DPort: 5353})
+	for _, f := range agg.Snapshot().Flows {
+		switch f.Dir {
+		case DirOther:
+			if f.Proc != "" {
+				t.Fatalf("overheard flow credited to %q", f.Proc)
+			}
+		case DirOut:
+			if f.Proc != "spotifyd(1500)" {
+				t.Fatalf("own flow process: %q", f.Proc)
+			}
+		}
+	}
+}
