@@ -83,6 +83,7 @@ jobs:
             homepage "https://github.com/Sousf/ears"
             url "${url}"
             sha256 "${sha}"
+            license "MIT"
 
             depends_on "go" => :build
             uses_from_macos "libpcap"
