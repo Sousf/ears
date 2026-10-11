@@ -1,0 +1,76 @@
+name: release
+
+# Merging MARSHAL's release pull request changes VERSION on the default
+# branch. This tags that version and publishes it with GoReleaser, which
+# also updates the formula in Sousf/homebrew-tap. Nothing else releases;
+# run it by hand from the Actions tab to retry a failed publish.
+on:
+  push:
+    branches: [main]
+    paths: [VERSION]
+  workflow_dispatch:
+
+permissions:
+  contents: write # push the tag and create the GitHub release
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # GoReleaser builds its changelog from git history, so a shallow
+          # clone would produce an empty one.
+          fetch-depth: 0
+
+      # A tag pushed with the workflow token does not start other workflows,
+      # so tagging and publishing happen here, in one job.
+      - name: Tag VERSION
+        id: tag
+        run: |
+          v="v$(tr -d '[:space:]' < VERSION)"
+          if ! [[ "$v" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::VERSION must be major.minor.patch, got '$v'"
+            exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/$v" >/dev/null; then
+            if [ "$(git rev-list -n1 "$v")" != "$GITHUB_SHA" ]; then
+              echo "::error::$v already tags another commit; bump VERSION"
+              exit 1
+            fi
+            echo "$v already tags this commit; publishing it again"
+          else
+            git tag "$v" "$GITHUB_SHA"
+            git push origin "refs/tags/$v"
+          fi
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The formula is pushed to the tap over SSH with a deploy key that can
+      # write to that one repository and nothing else. GoReleaser wants a
+      # path to the key, so write it out with restrictive permissions.
+      - name: Prepare tap deploy key
+        env:
+          DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+        run: |
+          key_path="$RUNNER_TEMP/tap_deploy_key"
+          install -m 600 /dev/null "$key_path"
+          printf '%s\n' "$DEPLOY_KEY" > "$key_path"
+          echo "HOMEBREW_TAP_DEPLOY_KEY_PATH=$key_path" >> "$GITHUB_ENV"
+          # Pin GitHub's host key rather than disabling host verification.
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+
+      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

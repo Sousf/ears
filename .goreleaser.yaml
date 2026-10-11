@@ -1,0 +1,61 @@
+# Written by MARSHAL onboarding as a starting point: check the platforms and
+# CGO_ENABLED before merging. GoReleaser builds ears when the release
+# workflow tags VERSION, publishes a GitHub release, and updates the formula
+# in Sousf/homebrew-tap.
+version: 2
+
+project_name: ears
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  - id: ears
+    main: .
+    binary: ears
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+
+archives:
+  - id: ears
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  disable: true # the release PR's notes are in CHANGELOG.md
+
+# Written by MARSHAL onboarding. A formula rather than a cask, so it installs
+# on Linux too. Pushed over SSH with a deploy key that can write to the tap
+# and nothing else; `marshal tap-key ears` creates it.
+brews:
+  - name: ears
+    repository:
+      owner: Sousf
+      name: homebrew-tap
+      branch: main
+      git:
+        url: git@github.com:Sousf/homebrew-tap.git
+        private_key: "{{ .Env.HOMEBREW_TAP_DEPLOY_KEY_PATH }}"
+    directory: Formula
+    homepage: https://github.com/Sousf/ears
+    description: "A terminal traffic monitor. It captures the packets reaching one network"
+    commit_author:
+      name: goreleaser
+      email: noreply@github.com
+    install: |
+      bin.install "ears"
+    test: |
+      assert_predicate bin/"ears", :executable?
