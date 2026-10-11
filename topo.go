@@ -43,9 +43,28 @@ type TSPeer struct {
 	OS     string
 	IPs    []netip.Addr
 	Online bool
+	Active bool // traffic flowing right now
 	Self   bool
-	Direct string // endpoint when connected directly
-	Relay  string // DERP region otherwise
+	Direct string     // endpoint when connected directly
+	Relay  string     // home DERP relay region
+	Public netip.Addr // self only: public address Tailscale discovered
+}
+
+// Path describes how traffic to the peer travels right now.
+func (p TSPeer) Path() string {
+	switch {
+	case p.Self:
+		return "this machine"
+	case !p.Online:
+		return "offline"
+	case !p.Active:
+		return "online, idle"
+	case p.Direct != "":
+		return "direct to " + p.Direct
+	case p.Relay != "":
+		return "through relay " + p.Relay
+	}
+	return "online"
 }
 
 type ARPEntry struct {
@@ -100,6 +119,7 @@ type TopoView struct {
 	TraceState string
 	Target     string
 	Hostname   string
+	DNS        []netip.Addr
 }
 
 // View reads the routing and neighbour tables and returns a snapshot.
@@ -134,6 +154,7 @@ func (t *Topo) View(iface string) TopoView {
 	}
 	_, err := os.Stat(filepath.Join("/sys/class/net", iface, "wireless"))
 	v.Wireless = err == nil
+	v.DNS = dnsServers()
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -219,6 +240,34 @@ func (t *Topo) readARP() []ARPEntry {
 		out = append(out, ARPEntry{IP: ip, MAC: strings.ToLower(fl[3]), Iface: fl[5]})
 	}
 	return out
+}
+
+// dnsServers lists the resolvers this machine uses. With systemd-resolved,
+// /etc/resolv.conf only names the local stub, so the real list is elsewhere.
+func dnsServers() []netip.Addr {
+	read := func(path string) []netip.Addr {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		var out []netip.Addr
+		for _, line := range strings.Split(string(b), "\n") {
+			f := strings.Fields(line)
+			if len(f) >= 2 && f[0] == "nameserver" {
+				if ip, err := netip.ParseAddr(f[1]); err == nil {
+					out = append(out, ip)
+				}
+			}
+		}
+		return out
+	}
+	s := read("/etc/resolv.conf")
+	if len(s) == 1 && s[0].IsLoopback() {
+		if r := read("/run/systemd/resolve/resolv.conf"); len(r) > 0 {
+			return r
+		}
+	}
+	return s
 }
 
 // ---- MAC vendors ----
@@ -406,8 +455,10 @@ type tsJSONPeer struct {
 	OS           string
 	TailscaleIPs []string
 	Online       bool
+	Active       bool
 	Relay        string
 	CurAddr      string
+	Addrs        []string
 }
 
 func tailscalePeers() []TSPeer {
@@ -430,10 +481,15 @@ func parseTailscale(out []byte) []TSPeer {
 		return nil
 	}
 	conv := func(p tsJSONPeer, self bool) TSPeer {
-		tp := TSPeer{Name: p.HostName, OS: p.OS, Online: p.Online || self, Self: self, Direct: p.CurAddr, Relay: p.Relay}
+		tp := TSPeer{Name: p.HostName, OS: p.OS, Online: p.Online || self, Active: p.Active, Self: self, Direct: p.CurAddr, Relay: p.Relay}
 		for _, s := range p.TailscaleIPs {
 			if ip, err := netip.ParseAddr(s); err == nil {
 				tp.IPs = append(tp.IPs, ip)
+			}
+		}
+		for _, s := range p.Addrs {
+			if ap, err := netip.ParseAddrPort(s); err == nil && !ap.Addr().IsPrivate() && !tp.Public.IsValid() {
+				tp.Public = ap.Addr()
 			}
 		}
 		return tp

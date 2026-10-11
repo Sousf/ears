@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
+	"github.com/muesli/termenv"
 )
 
 func TestMain(m *testing.M) {
@@ -276,3 +277,116 @@ func TestMapRender(t *testing.T) {
 }
 
 var _ = gopacket.Payload(nil)
+
+// Truncating coloured text must never cut inside an escape sequence: a broken
+// sequence swallows the padding after it and shifts the rest of the line.
+func TestFitColoured(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	defer lipgloss.SetColorProfile(prev)
+	s := "↓960.0 KB ↑168.6 KB" + stDim.Render(" · now")
+	if !strings.Contains(s, "\x1b[") {
+		t.Fatal("colour not forced; the test would prove nothing")
+	}
+	for w := 4; w <= 30; w++ {
+		got := fit(s, w, false)
+		if lipgloss.Width(got) != w {
+			t.Fatalf("w=%d: width %d: %q", w, lipgloss.Width(got), got)
+		}
+		if strings.Contains(stripANSI(got), "\x1b") {
+			t.Fatalf("w=%d: broken escape sequence left behind: %q", w, got)
+		}
+		if l := truncLine(s, w); lipgloss.Width(l) > w || strings.Contains(stripANSI(l), "\x1b") {
+			t.Fatalf("truncLine w=%d: %q", w, l)
+		}
+	}
+	box := drawBox([]string{s, "short"}, 22, stMapDev, 11, -1)
+	for _, l := range box {
+		if lipgloss.Width(l) != 22 || strings.Contains(stripANSI(l), "\x1b") {
+			t.Fatalf("box line %q is %d wide", l, lipgloss.Width(l))
+		}
+	}
+}
+
+func TestMapSelection(t *testing.T) {
+	agg, res := testAgg(t)
+	m := newModel(agg, res, &Capture{}, make(chan error), "wlan0", "")
+	m.topo.hops = []Hop{{N: 1, IP: netip.MustParseAddr("192.168.1.1"), RTT: time.Millisecond}, {N: 2, IP: netip.MustParseAddr("58.162.26.199"), RTT: 9 * time.Millisecond}}
+	m.topo.traceState, m.topo.target = "done", "1.1.1.1"
+	m.topo.tailscale = []TSPeer{{Name: "me", Self: true, Online: true, Public: netip.MustParseAddr("120.148.41.212")}, {Name: "nas", Online: true, Relay: "syd"}}
+	mm, _ := m.Update(tea.WindowSizeMsg{Width: 130, Height: 30})
+	m = mm.(model)
+	mm, _ = m.Update(key("6"))
+	m = mm.(model)
+	fixTV := func() {
+		m.tv = m.topo.View("wlan0")
+		m.tv.Gateway, m.tv.Subnet, m.tv.Iface = netip.MustParseAddr("192.168.1.1"), netip.MustParsePrefix("192.168.1.0/24"), "wlan0"
+		m.tv.LocalIP, m.tv.LocalMAC = netip.MustParseAddr("192.168.1.117"), "04:e8:b9:48:29:f2"
+		m.tv.ARP = []ARPEntry{{IP: netip.MustParseAddr("192.168.1.1"), MAC: "78:20:51:81:77:5f", Iface: "wlan0"}, {IP: netip.MustParseAddr("192.168.1.11"), MAC: "9c:7b:ef:4e:d7:f6", Iface: "wlan0"}}
+	}
+	fixTV()
+	if m.mapSel != "router" {
+		t.Fatalf("default selection %q", m.mapSel)
+	}
+	_, objs := m.mapLayout()
+	var keys []string
+	for _, o := range objs {
+		keys = append(keys, o.key)
+	}
+	want := "inet hop:2 router dev:04:e8:b9:48:29:f2 dev:9c:7b:ef:4e:d7:f6 ts:me ts:nas"
+	if strings.Join(keys, " ") != want {
+		t.Fatalf("objects in order:\n got %s\nwant %s", strings.Join(keys, " "), want)
+	}
+	// Moving down from the router reaches the devices, and the map scrolls to keep the selection visible.
+	for i := 0; i < 2; i++ {
+		mm, _ = m.Update(key("j"))
+		m = mm.(model)
+	}
+	if m.mapSel != "dev:9c:7b:ef:4e:d7:f6" {
+		t.Fatalf("after 2 x j: %q", m.mapSel)
+	}
+	mm, _ = m.Update(key("G"))
+	m = mm.(model)
+	if m.mapSel != "ts:nas" {
+		t.Fatalf("G: %q", m.mapSel)
+	}
+	mm, _ = m.Update(key("g"))
+	m = mm.(model)
+	if m.mapSel != "inet" || m.mapOff != 0 {
+		t.Fatalf("g: %q offset %d", m.mapSel, m.mapOff)
+	}
+	lines, objs := m.mapLayout()
+	for _, o := range objs {
+		if o.key == m.mapSel && (o.line < m.mapOff || o.line+o.height > m.mapOff+m.rowsAvail()+1) {
+			t.Fatalf("selection at line %d not visible from offset %d", o.line, m.mapOff)
+		}
+	}
+	if !strings.Contains(strings.Join(lines, "\n"), "┏") {
+		t.Fatal("selected box not drawn heavy")
+	}
+	// Each kind of object opens a detail panel with the right facts.
+	for _, c := range []struct{ sel, want string }{
+		{"dev:9c:7b:ef:4e:d7:f6", "9c:7b:ef:4e:d7:f6"},
+		{"router", "default gateway"},
+		{"hop:2", "time exceeded"},
+		{"inet", "120.148.41.212"},
+		{"ts:nas", "online, idle"},
+		{"dev:04:e8:b9:48:29:f2", "this machine"},
+	} {
+		m.mapSel = c.sel
+		mm, _ = m.Update(key("enter"))
+		m = mm.(model)
+		if m.overlay == nil || !strings.Contains(stripANSI(strings.Join(m.overlay.lines, "\n")), c.want) {
+			t.Fatalf("detail for %s missing %q: %+v", c.sel, c.want, m.overlay)
+		}
+		mm, _ = m.Update(key("esc"))
+		m = mm.(model)
+		_, p := m.aiMapObject(c.sel)
+		if !strings.Contains(p, c.want) {
+			t.Fatalf("ask prompt for %s missing %q", c.sel, c.want)
+		}
+	}
+	if (TSPeer{Online: true, Active: true, Relay: "syd"}).Path() != "through relay syd" || (TSPeer{Online: true, Relay: "syd"}).Path() != "online, idle" {
+		t.Fatal("tailscale path wording")
+	}
+}

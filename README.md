@@ -106,7 +106,20 @@ complete than a fresh one.
 The trace sends a few dozen small UDP probes with rising TTLs; `-trace` picks
 another target and `-no-trace` stops it running on its own. Routers past a
 certain point often ignore probes, and the trace stops after three silent
-hops. Press `a` on the map to have Claude explain the whole picture.
+hops.
+
+`j` and `k` move a highlight through everything on the map in reading order,
+and the map scrolls to follow it. `Enter` opens the selected item's details:
+
+| Item      | Details                                                                         |
+| --------- | ------------------------------------------------------------------------------- |
+| Device    | names, addresses, MAC and maker, traffic, conversations, what its ports suggest |
+| Router    | its role, latency, which radio is the access point, whether it answers DNS      |
+| Hop       | operator, location, round trip, and how the trace found it                      |
+| Internet  | public address, ISP, DNS servers, top networks and countries                    |
+| Tailscale | status, addresses, and whether traffic goes direct or through a relay           |
+
+`a` asks Claude about the selected item and `A` about the whole map.
 
 ### Notices
 

@@ -39,6 +39,7 @@ var (
 	stMapUp      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("75"))
 	stMapDown    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("82"))
 	stBold       = lipgloss.NewStyle().Bold(true)
+	stSelBorder  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231"))
 	hopPalette   = []lipgloss.Style{
 		lipgloss.NewStyle().Foreground(lipgloss.Color("214")),
 		lipgloss.NewStyle().Foreground(lipgloss.Color("141")),
@@ -187,8 +188,18 @@ func osHint(vendorClass string) string {
 // drawBox returns a rounded box of display width w. join columns (relative to
 // the box, -1 for none) put ┴ in the top border and ┬ in the bottom one.
 func drawBox(body []string, w int, border lipgloss.Style, topJoin, botJoin int) []string {
+	return drawBoxSel(body, w, border, topJoin, botJoin, false)
+}
+
+// drawBoxSel draws a heavy, bright border when sel is set.
+func drawBoxSel(body []string, w int, border lipgloss.Style, topJoin, botJoin int, sel bool) []string {
 	if w < 6 {
 		w = 6
+	}
+	tl, tr, bl, br, h, v, jt, jb := "╭", "╮", "╰", "╯", "─", "│", "┴", "┬"
+	if sel {
+		tl, tr, bl, br, h, v, jt, jb = "┏", "┓", "┗", "┛", "━", "┃", "┻", "┳"
+		border = stSelBorder
 	}
 	edge := func(l, r string, join int, jc string) string {
 		runes := []string{l}
@@ -196,29 +207,21 @@ func drawBox(body []string, w int, border lipgloss.Style, topJoin, botJoin int) 
 			if i == join {
 				runes = append(runes, jc)
 			} else {
-				runes = append(runes, "─")
+				runes = append(runes, h)
 			}
 		}
 		runes = append(runes, r)
 		return border.Render(strings.Join(runes, ""))
 	}
-	out := []string{edge("╭", "╮", topJoin, "┴")}
+	out := []string{edge(tl, tr, topJoin, jt)}
 	for _, l := range body {
-		out = append(out, border.Render("│")+" "+fitStyled(l, w-4)+" "+border.Render("│"))
+		out = append(out, border.Render(v)+" "+fitStyled(l, w-4)+" "+border.Render(v))
 	}
-	return append(out, edge("╰", "╯", botJoin, "┬"))
+	return append(out, edge(bl, br, botJoin, jb))
 }
 
 // fitStyled pads or truncates a possibly styled string to exactly w cells.
-func fitStyled(s string, w int) string {
-	if lipgloss.Width(s) > w {
-		s = truncLine(s, w-1) + "…"
-	}
-	if pad := w - lipgloss.Width(s); pad > 0 {
-		s += strings.Repeat(" ", pad)
-	}
-	return s
-}
+func fitStyled(s string, w int) string { return fit(s, w, false) }
 
 func indent(n int) string {
 	if n <= 0 {
@@ -232,20 +235,38 @@ type spineRow struct {
 	node  string // "" for a plain segment, else the node glyph
 	style lipgloss.Style
 	text  string
+	key   string // selectable object key, for hop rows
 }
+
+// mapObj is a selectable thing on the map and where it was drawn.
+type mapObj struct {
+	key    string
+	line   int
+	height int
+}
+
+func devKey(d mapDevice) string { return "dev:" + d.MAC }
 
 // ---- the map ----
 
 func (m model) mapLines() []string {
+	lines, _ := m.mapLayout()
+	return lines
+}
+
+// mapLayout draws the map and records each selectable object's position.
+func (m model) mapLayout() ([]string, []mapObj) {
 	W := max(m.w, 40)
 	tv := m.tv
 	router, devs := m.buildDevices(tv)
 	var lines []string
+	var objs []mapObj
 	add := func(ls ...string) {
 		for _, l := range ls {
 			lines = append(lines, truncLine(l, W))
 		}
 	}
+	mark := func(key string, height int) { objs = append(objs, mapObj{key: key, line: len(lines), height: height}) }
 
 	boxW := min(54, W-2)
 	// Wide terminals: boxes centred on the spine, pulled left so hop labels
@@ -301,7 +322,9 @@ func (m model) mapLines() []string {
 	default:
 		inet = append(inet, stErr.Render(tv.TraceState))
 	}
-	for _, l := range drawBox(inet, boxW, stMapNet, -1, join) {
+	inetBox := drawBoxSel(inet, boxW, stMapNet, -1, join, m.mapSel == "inet")
+	mark("inet", len(inetBox))
+	for _, l := range inetBox {
 		add(indent(boxLeft) + l)
 	}
 
@@ -345,7 +368,7 @@ func (m model) mapLines() []string {
 		if narrow {
 			text = fmt.Sprintf("%s  %-15s %7s  %s", st.Render(fmt.Sprintf("%2d", h.N)), h.IP, rttStr(h.RTT), label)
 		}
-		spine = append(spine, spineRow{node: "●", style: st, text: text})
+		spine = append(spine, spineRow{node: "●", style: st, text: text, key: fmt.Sprintf("hop:%d", h.N)})
 	}
 	spine = append(spine, spineRow{})
 	spineTop := spine
@@ -451,17 +474,31 @@ func (m model) mapLines() []string {
 			case idx == down && r.node == "":
 				glyph = stMapDown.Render("▼")
 			}
-			add(indent(sc) + glyph + "  " + r.text)
+			text := r.text
+			if r.key != "" {
+				mark(r.key, 1)
+				if r.key == m.mapSel {
+					text = stSelected.Render(" " + stripANSI(text) + " ")
+				}
+			}
+			add(indent(sc) + glyph + "  " + text)
 		}
 	}
 	renderSpine(spineTop, 0)
-	for _, l := range drawBox(rbody, boxW, stMapRouter, join, join) {
+	rbox := drawBoxSel(rbody, boxW, stMapRouter, join, join, m.mapSel == "router")
+	mark("router", len(rbox))
+	for _, l := range rbox {
 		add(indent(boxLeft) + l)
 	}
 	renderSpine(link, len(spineTop))
 
 	// LAN bus and device boxes.
-	lines = append(lines, m.lanGrid(devs, tv, sc, W)...)
+	gridLines, gridObjs := m.lanGrid(devs, tv, sc, W)
+	for _, o := range gridObjs {
+		o.line += len(lines)
+		objs = append(objs, o)
+	}
+	lines = append(lines, gridLines...)
 
 	// Tailscale overlay network.
 	if len(tv.Tailscale) > 0 {
@@ -477,27 +514,29 @@ func (m model) mapLines() []string {
 					ip = a.String()
 				}
 			}
-			path := ""
+			path := p.Path()
 			switch {
 			case p.Self:
-				path = stMapSelf.Render("this machine")
-			case !p.Online:
-				path = stDim.Render("offline")
-			case p.Direct != "":
-				path = "direct to " + p.Direct
-			case p.Relay != "":
-				path = "via relay " + p.Relay
+				path = stMapSelf.Render(path)
+			case !p.Online || !p.Active:
+				path = stDim.Render(path)
 			}
-			add(fmt.Sprintf("  %s %-24s %-15s %-8s %s", dot, fitStyled(p.Name, 24), ip, p.OS, path))
+			row := fmt.Sprintf("%s %-24s %-15s %-8s %s", dot, fitStyled(p.Name, 24), ip, p.OS, path)
+			key := "ts:" + p.Name
+			if key == m.mapSel {
+				row = stSelected.Render(" " + stripANSI(row) + " ")
+			}
+			mark(key, 1)
+			add("  " + row)
 		}
 	}
 
-	add("", stDim.Render("● active in the last 30 s   ○ quiet   ")+stMapUp.Render("▲")+stDim.Render(" your traffic going out   ")+stMapDown.Render("▼")+stDim.Render(" coming in"))
-	return lines
+	add("", stDim.Render("● active in the last 30 s   ○ quiet   ")+stMapUp.Render("▲")+stDim.Render(" your traffic going out   ")+stMapDown.Render("▼")+stDim.Render(" coming in   j/k select, enter details"))
+	return lines, objs
 }
 
 // lanGrid draws the LAN bus joined to the spine at column sc, and the device boxes under it.
-func (m model) lanGrid(devs []mapDevice, tv TopoView, sc, W int) []string {
+func (m model) lanGrid(devs []mapDevice, tv TopoView, sc, W int) ([]string, []mapObj) {
 	const x0 = 3
 	bw := 28
 	if W < 120 {
@@ -510,13 +549,14 @@ func (m model) lanGrid(devs []mapDevice, tv TopoView, sc, W int) []string {
 	rows := (len(devs) + cols - 1) / cols
 	center := func(i int) int { return x0 + i*(bw+1) + bw/2 }
 	var out []string
+	var objs []mapObj
 	label := "LAN"
 	if tv.Subnet.IsValid() {
 		label = fmt.Sprintf("LAN %s on %s · %d devices", tv.Subnet, tv.Iface, len(devs)+1)
 	}
 	if len(devs) == 0 {
 		out = append(out, indent(sc)+stMapSpine.Render("│"), indent(max(0, sc-len(label)/2))+stDim.Render(label+" · no other devices seen yet"))
-		return out
+		return out, nil
 	}
 	for r := 0; r < rows; r++ {
 		n := min(cols, len(devs)-r*cols)
@@ -569,7 +609,9 @@ func (m model) lanGrid(devs []mapDevice, tv TopoView, sc, W int) []string {
 
 		boxes := make([][]string, n)
 		for i := 0; i < n; i++ {
-			boxes[i] = m.deviceBox(devs[r*cols+i], bw)
+			d := devs[r*cols+i]
+			boxes[i] = m.deviceBox(d, bw, devKey(d) == m.mapSel)
+			objs = append(objs, mapObj{key: devKey(d), line: len(out), height: len(boxes[i])})
 		}
 		for li := range boxes[0] {
 			trunk := "   "
@@ -583,10 +625,10 @@ func (m model) lanGrid(devs []mapDevice, tv TopoView, sc, W int) []string {
 			out = append(out, truncLine(trunk+strings.Join(parts, " "), W))
 		}
 	}
-	return out
+	return out, objs
 }
 
-func (m model) deviceBox(d mapDevice, bw int) []string {
+func (m model) deviceBox(d mapDevice, bw int, sel bool) []string {
 	border := stMapDev
 	switch {
 	case d.Self:
@@ -626,7 +668,7 @@ func (m model) deviceBox(d mapDevice, bw int) []string {
 	}
 	traffic := stDim.Render("in the ARP table, quiet")
 	if !d.ARPOnly && d.BytesFrom+d.BytesTo > 0 {
-		traffic = fmt.Sprintf("↓%s ↑%s", humanBytes(d.BytesTo), humanBytes(d.BytesFrom))
+		traffic = fmt.Sprintf("↓%s ↑%s", shortBytes(d.BytesTo), shortBytes(d.BytesFrom))
 		if !d.Last.IsZero() {
 			traffic += stDim.Render(" · " + age(d.Last))
 		}
@@ -634,7 +676,7 @@ func (m model) deviceBox(d mapDevice, bw int) []string {
 	if d.Self {
 		traffic = stDim.Render(d.MAC)
 	}
-	return drawBox([]string{dot + " " + stBold.Render(name), ip, maker, traffic}, bw, border, bw/2, -1)
+	return drawBoxSel([]string{dot + " " + stBold.Render(name), ip, maker, traffic}, bw, border, bw/2, -1, sel)
 }
 
 // sameDevice guesses whether two MACs belong to one box: routers number their
@@ -669,7 +711,7 @@ func (m model) lastBucket() Bucket {
 }
 
 func (m model) renderMap(b *strings.Builder) {
-	lines := m.mapLines()
+	lines, _ := m.mapLayout()
 	avail := m.rowsAvail() + 1
 	off := min(m.mapOff, max(0, len(lines)-avail))
 	for i := 0; i < avail; i++ {
@@ -718,3 +760,6 @@ func (m model) aiMap() (title, prompt string) {
 	b.WriteString("\nExplain this network: how my traffic gets from this computer to the internet, what each device on the LAN probably is, and anything worth checking.")
 	return "Ask Claude · network map", b.String()
 }
+
+// shortBytes is humanBytes without the space, for tight boxes: "960.0KB".
+func shortBytes(n uint64) string { return strings.Replace(humanBytes(n), " ", "", 1) }

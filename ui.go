@@ -10,8 +10,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/google/gopacket/layers"
-	"github.com/mattn/go-runewidth"
 )
 
 type view int
@@ -126,6 +126,7 @@ type model struct {
 	topo      *Topo
 	tv        TopoView
 	mapOff    int
+	mapSel    string // key of the selected map object
 	phase     int
 	animOn    bool
 	autoTrace bool // start a route trace the first time the map opens
@@ -284,10 +285,10 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.view == viewMap {
 		switch k.String() {
 		case "j", "down":
-			m.mapOff++
+			m.moveMapSel(1)
 			return m, nil
 		case "k", "up":
-			m.mapOff = max(0, m.mapOff-1)
+			m.moveMapSel(-1)
 			return m, nil
 		case "pgdown", "ctrl+d":
 			m.mapOff += m.rowsAvail()
@@ -296,11 +297,19 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mapOff = max(0, m.mapOff-m.rowsAvail())
 			return m, nil
 		case "g", "home":
-			m.mapOff = 0
+			m.moveMapSel(-1 << 20)
 			return m, nil
 		case "G", "end":
-			m.mapOff = len(m.mapLines())
+			m.moveMapSel(1 << 20)
 			return m, nil
+		case "enter":
+			if m.mapSel != "" {
+				title, lines := m.mapDetail(m.mapSel)
+				m.overlay = &overlay{title: title, lines: lines}
+			}
+			return m, nil
+		case "A":
+			return m.askClaudeWith(m.aiMap())
 		}
 	}
 	switch k.String() {
@@ -383,6 +392,9 @@ func (m *model) setView(v view) {
 	m.cursor, m.offset = 0, 0
 	if v == viewMap {
 		m.tv = m.topo.View(m.iface)
+		if m.mapSel == "" {
+			m.mapSel = "router"
+		}
 		if m.autoTrace && !m.traced {
 			m.startTrace()
 		}
@@ -747,7 +759,7 @@ func (m model) renderFooter() string {
 	case viewNotices:
 		keys = append(keys, "a ask")
 	case viewMap:
-		keys = []string{"q quit", "tab view", "j/k scroll", "u retrace", "a ask", "p pause", "? help"}
+		keys = []string{"q quit", "tab view", "j/k select", "enter details", "a ask about it", "A ask about the map", "u retrace", "? help"}
 	}
 	keys = append(keys, "p pause", "r reset", "? help")
 	var parts []string
@@ -1110,21 +1122,25 @@ func (m model) renderOverlay() string {
 
 // ---- formatting helpers ----
 
+// fit pads or truncates s to exactly w cells. s may contain colour codes:
+// widths and truncation skip escape sequences, so a cut never lands inside one.
 func fit(s string, w int, right bool) string {
-	if runewidth.StringWidth(s) > w {
-		s = runewidth.Truncate(s, w, "…")
+	if ansi.StringWidth(s) > w {
+		s = ansi.Truncate(s, w, "…")
 	}
+	pad := strings.Repeat(" ", max(0, w-ansi.StringWidth(s)))
 	if right {
-		return runewidth.FillLeft(s, w)
+		return pad + s
 	}
-	return runewidth.FillRight(s, w)
+	return s + pad
 }
 
+// truncLine cuts a possibly coloured line to at most w cells.
 func truncLine(s string, w int) string {
-	if w <= 0 || lipgloss.Width(s) <= w {
+	if w <= 0 || ansi.StringWidth(s) <= w {
 		return s
 	}
-	return runewidth.Truncate(s, w, "")
+	return ansi.Truncate(s, w, "")
 }
 
 // nameOrigin picks the best label for a flow: SNI/DNS name, then reverse DNS, then origin.
@@ -1280,11 +1296,18 @@ func (m model) askClaude() (tea.Model, tea.Cmd) {
 		title, prompt = m.aiPacket(m.pkts[m.cursor])
 	case m.view == viewNotices && m.cursor < len(m.notices):
 		title, prompt = m.aiNotice(m.notices[m.cursor])
+	case m.view == viewMap && m.mapSel != "":
+		title, prompt = m.aiMapObject(m.mapSel)
 	case m.view == viewMap:
 		title, prompt = m.aiMap()
 	default:
 		return m, nil
 	}
+	return m.askClaudeWith(title, prompt)
+}
+
+// askClaudeWith opens the answer panel for a prepared question.
+func (m model) askClaudeWith(title, prompt string) (tea.Model, tea.Cmd) {
 	if m.explain == nil {
 		m.overlay = &overlay{title: "Ask Claude", lines: aiDisabledLines()}
 		return m, nil
@@ -1341,5 +1364,29 @@ func aiDisabledLines() []string {
 		"  addresses, ports, server and process names, counters, and for a single packet its",
 		"  decoded headers and first 128 bytes. Nothing is sent until you press a, and only that row.",
 		"  The panel's v key shows the exact text before you rely on the answer.",
+	}
+}
+
+// moveMapSel moves the map selection by delta objects and scrolls it into view.
+func (m *model) moveMapSel(delta int) {
+	_, objs := m.mapLayout()
+	if len(objs) == 0 {
+		return
+	}
+	i := 0
+	for j, o := range objs {
+		if o.key == m.mapSel {
+			i = j
+		}
+	}
+	i = min(max(i+delta, 0), len(objs)-1)
+	o := objs[i]
+	m.mapSel = o.key
+	avail := m.rowsAvail() + 1
+	if o.line < m.mapOff {
+		m.mapOff = max(0, o.line-1)
+	}
+	if o.line+o.height > m.mapOff+avail {
+		m.mapOff = o.line + o.height - avail + 1
 	}
 }
