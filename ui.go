@@ -716,7 +716,10 @@ func (m model) View() string {
 
 func (m model) renderHeader() string {
 	s := m.snap.Stats
-	up := time.Since(s.Start).Truncate(time.Second)
+	var up time.Duration
+	if !s.Start.IsZero() { // zero until the first snapshot
+		up = time.Since(s.Start).Truncate(time.Second)
+	}
 	line1 := fmt.Sprintf("%s  iface %s", stTitle.Render("ears"), stKey.Render(m.iface))
 	if m.cap.ReadFrom != "" {
 		line1 = fmt.Sprintf("%s  replay %s", stTitle.Render("ears"), stKey.Render(m.iface))
