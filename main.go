@@ -27,6 +27,8 @@ func main() {
 	noProc := flag.Bool("no-proc", false, "do not map local ports to processes via /proc")
 	ai := flag.Bool("ai", false, "enable the a key: send the selected row to Claude for an explanation")
 	aiBackend := flag.String("ai-backend", "auto", "how -ai reaches Claude: api (ANTHROPIC_API_KEY), claude-code (your Claude plan via the claude command), or auto (api when a key is set)")
+	traceTo := flag.String("trace", "1.1.1.1", "address the Map view traces the route to")
+	noTrace := flag.Bool("no-trace", false, "do not trace the route automatically when the Map view opens (u still does)")
 	aiModel := flag.String("ai-model", "claude-opus-5-5", "Claude model for -ai (the claude-code backend uses Claude Code's default unless this is set)")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "usage: ears [flags]\n\nCapture needs raw-socket rights. Either run as root or grant them once:\n  sudo setcap cap_net_raw,cap_net_admin=eip ./ears\n\nflags:\n")
@@ -91,6 +93,8 @@ func main() {
 	}()
 
 	m := newModel(agg, res, cap, errs, *iface, *filter)
+	m.topo = NewTopo(*traceTo)
+	m.autoTrace = !*noTrace
 	if *ai {
 		modelSet := false
 		flag.Visit(func(f *flag.Flag) { modelSet = modelSet || f.Name == "ai-model" })

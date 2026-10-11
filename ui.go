@@ -22,11 +22,12 @@ const (
 	viewPackets
 	viewStats
 	viewNotices
+	viewMap
 	viewCount
 )
 
 func (v view) String() string {
-	return [...]string{"Flows", "Hosts", "Packets", "Stats", "Notices"}[v]
+	return [...]string{"Flows", "Hosts", "Packets", "Stats", "Notices", "Map"}[v]
 }
 
 type sortKey int
@@ -122,6 +123,14 @@ type model struct {
 	explain  Asker
 	aiSeq    int
 
+	topo      *Topo
+	tv        TopoView
+	mapOff    int
+	phase     int
+	animOn    bool
+	autoTrace bool // start a route trace the first time the map opens
+	traced    bool
+
 	w, h      int
 	view      view
 	cursor    int
@@ -149,7 +158,7 @@ type model struct {
 
 func newModel(agg *Agg, res *Resolver, cap *Capture, errs <-chan error, iface, filter string) model {
 	m := model{agg: agg, res: res, cap: cap, errs: errs, iface: iface, filter: filter, w: 80, h: 24,
-		pcapOut: cap.WriteTo, linkType: cap.LinkType(), seenCountries: map[string]bool{}}
+		pcapOut: cap.WriteTo, linkType: cap.LinkType(), seenCountries: map[string]bool{}, topo: NewTopo("1.1.1.1")}
 	return m
 }
 
@@ -183,9 +192,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.snap = m.agg.Snapshot()
 			m.updateRates(time.Time(msg))
 			m.noticeCountries()
+			if m.view == viewMap {
+				m.tv = m.topo.View(m.iface)
+			}
 			m.rebuild()
 		}
 		return m, tick()
+	case animMsg:
+		if m.view != viewMap {
+			m.animOn = false
+			return m, nil
+		}
+		m.phase++
+		return m, animTick()
 	case captureErrMsg:
 		m.err = msg.err
 	case aiMsg:
@@ -262,6 +281,28 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.rebuild()
 		return m, nil
 	}
+	if m.view == viewMap {
+		switch k.String() {
+		case "j", "down":
+			m.mapOff++
+			return m, nil
+		case "k", "up":
+			m.mapOff = max(0, m.mapOff-1)
+			return m, nil
+		case "pgdown", "ctrl+d":
+			m.mapOff += m.rowsAvail()
+			return m, nil
+		case "pgup", "ctrl+u":
+			m.mapOff = max(0, m.mapOff-m.rowsAvail())
+			return m, nil
+		case "g", "home":
+			m.mapOff = 0
+			return m, nil
+		case "G", "end":
+			m.mapOff = len(m.mapLines())
+			return m, nil
+		}
+	}
 	switch k.String() {
 	case "q":
 		return m, tea.Quit
@@ -269,8 +310,12 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.setView((m.view + 1) % viewCount)
 	case "shift+tab", "left", "h":
 		m.setView((m.view + viewCount - 1) % viewCount)
-	case "1", "2", "3", "4", "5":
+	case "1", "2", "3", "4", "5", "6":
 		m.setView(view(k.String()[0] - '1'))
+	case "u":
+		if m.view == viewMap {
+			m.startTrace()
+		}
 	case "j", "down":
 		m.cursor++
 	case "k", "up":
@@ -326,12 +371,29 @@ func (m model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.cursor, m.offset = 0, 0
 	}
 	m.rebuild()
+	if m.view == viewMap && !m.animOn {
+		m.animOn = true
+		return m, animTick()
+	}
 	return m, nil
 }
 
 func (m *model) setView(v view) {
 	m.view = v
 	m.cursor, m.offset = 0, 0
+	if v == viewMap {
+		m.tv = m.topo.View(m.iface)
+		if m.autoTrace && !m.traced {
+			m.startTrace()
+		}
+	}
+}
+
+func (m *model) startTrace() {
+	m.traced = true
+	res := m.res
+	m.topo.Trace(func(ip netip.Addr) { res.Enqueue(ip) })
+	m.tv = m.topo.View(m.iface)
 }
 
 func (m model) handleOverlayKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -607,6 +669,8 @@ func (m model) View() string {
 		m.renderStats(&b)
 	case viewNotices:
 		m.renderNotices(&b)
+	case viewMap:
+		m.renderMap(&b)
 	}
 	if m.showDetail() {
 		b.WriteString(m.renderDetail())
@@ -655,7 +719,9 @@ func (m model) renderHeader() string {
 		}
 	}
 	line3 := strings.Join(tabs, "")
-	line3 += stDim.Render(fmt.Sprintf("  sort: %s  dir: %s", m.sort, m.dir))
+	if m.view != viewMap && m.view != viewStats {
+		line3 += stDim.Render(fmt.Sprintf("  sort: %s  dir: %s", m.sort, m.dir))
+	}
 	if m.searching {
 		line3 += "  search: " + stKey.Render(m.search+"▏")
 	} else if m.search != "" {
@@ -680,6 +746,8 @@ func (m model) renderFooter() string {
 		keys = append(keys, "enter decode", "a ask")
 	case viewNotices:
 		keys = append(keys, "a ask")
+	case viewMap:
+		keys = []string{"q quit", "tab view", "j/k scroll", "u retrace", "a ask", "p pause", "? help"}
 	}
 	keys = append(keys, "p pause", "r reset", "? help")
 	var parts []string
@@ -1212,6 +1280,8 @@ func (m model) askClaude() (tea.Model, tea.Cmd) {
 		title, prompt = m.aiPacket(m.pkts[m.cursor])
 	case m.view == viewNotices && m.cursor < len(m.notices):
 		title, prompt = m.aiNotice(m.notices[m.cursor])
+	case m.view == viewMap:
+		title, prompt = m.aiMap()
 	default:
 		return m, nil
 	}

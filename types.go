@@ -47,10 +47,35 @@ type Packet struct {
 	Flags   string // TCP flags, e.g. "SYN,ACK"
 	Seq     uint32
 	Ack     uint32
-	Name    string    // server name from TLS SNI or HTTP Host
-	SrcMAC  string    // ARP sender hardware address
-	DNS     *DNSReply // set on DNS replies carrying addresses
-	Raw     []byte    // copy of the frame, at most rawCap bytes
+	Name    string     // server name from TLS SNI or HTTP Host
+	SrcMAC  string     // Ethernet source (or ARP sender) hardware address
+	DstMAC  string     // Ethernet destination
+	LANName []NameAddr // names announced over mDNS
+	DHCP    *DHCPInfo  // hostname and vendor from a DHCP request
+	DNS     *DNSReply  // set on DNS replies carrying addresses
+	Raw     []byte     // copy of the frame, at most rawCap bytes
+}
+
+type NameAddr struct {
+	Name string
+	Addr netip.Addr
+}
+
+type DHCPInfo struct {
+	MAC      string
+	Hostname string
+	Vendor   string // vendor class, e.g. "android-dhcp-14" or "MSFT 5.0"
+}
+
+// MacInfo is what the capture has learned about one hardware address.
+type MacInfo struct {
+	MAC       string
+	IPs       map[netip.Addr]time.Time // LAN addresses seen with this MAC
+	BytesFrom uint64
+	BytesTo   uint64
+	Last      time.Time
+	Hostname  string // from DHCP
+	Vendor    string // DHCP vendor class
 }
 
 type DNSReply struct {

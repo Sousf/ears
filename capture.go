@@ -161,6 +161,10 @@ func (c *Capture) Run(ctx context.Context, out chan<- Packet, errs chan<- error)
 func decode(data []byte, lt layers.LinkType, ci gopacket.CaptureInfo, opts gopacket.DecodeOptions) (Packet, bool) {
 	pkt := gopacket.NewPacket(data, lt, opts)
 	p := Packet{Time: ci.Timestamp, Len: ci.Length}
+	if l := pkt.Layer(layers.LayerTypeEthernet); l != nil {
+		eth := l.(*layers.Ethernet)
+		p.SrcMAC, p.DstMAC = eth.SrcMAC.String(), eth.DstMAC.String()
+	}
 
 	if l := pkt.Layer(layers.LayerTypeARP); l != nil {
 		a := l.(*layers.ARP)
@@ -216,6 +220,19 @@ func decode(data []byte, lt layers.LinkType, ci gopacket.CaptureInfo, opts gopac
 			if err := d.DecodeFromBytes(tl.Payload, gopacket.NilDecodeFeedback); err == nil {
 				p.Info = dnsInfo(&d)
 				p.DNS = dnsAddrs(&d)
+				if p.SPort == 5353 && d.QR {
+					p.LANName = mdnsNames(&d)
+				}
+			}
+		}
+		if (p.SPort == 68 && p.DPort == 67) || (p.SPort == 67 && p.DPort == 68) {
+			var d layers.DHCPv4
+			if err := d.DecodeFromBytes(tl.Payload, gopacket.NilDecodeFeedback); err == nil {
+				p.DHCP = dhcpInfo(&d)
+				p.Info = "DHCP " + d.Operation.String()
+				if p.DHCP != nil && p.DHCP.Hostname != "" {
+					p.Info += " from " + p.DHCP.Hostname
+				}
 			}
 		}
 	}
@@ -314,6 +331,43 @@ func dnsAddrs(d *layers.DNS) *DNSReply {
 		return nil
 	}
 	return r
+}
+
+// mdnsNames lists the .local names an mDNS response announces for addresses.
+func mdnsNames(d *layers.DNS) []NameAddr {
+	var out []NameAddr
+	for _, rrs := range [][]layers.DNSResourceRecord{d.Answers, d.Additionals} {
+		for _, a := range rrs {
+			if (a.Type != layers.DNSTypeA && a.Type != layers.DNSTypeAAAA) || a.IP == nil {
+				continue
+			}
+			name := strings.TrimSuffix(string(a.Name), ".")
+			if ip := toAddr(a.IP); ip.IsValid() && strings.HasSuffix(name, ".local") {
+				out = append(out, NameAddr{Name: name, Addr: ip})
+			}
+		}
+	}
+	return out
+}
+
+// dhcpInfo pulls the client hostname and vendor class out of a DHCP request.
+func dhcpInfo(d *layers.DHCPv4) *DHCPInfo {
+	if d.Operation != layers.DHCPOpRequest {
+		return nil
+	}
+	info := &DHCPInfo{MAC: d.ClientHWAddr.String()}
+	for _, o := range d.Options {
+		switch o.Type {
+		case layers.DHCPOptHostname:
+			info.Hostname = string(o.Data)
+		case layers.DHCPOptClassID:
+			info.Vendor = string(o.Data)
+		}
+	}
+	if info.Hostname == "" && info.Vendor == "" {
+		return nil
+	}
+	return info
 }
 
 // ListInterfaces prints capture-capable interfaces with their addresses.

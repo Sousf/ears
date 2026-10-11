@@ -278,7 +278,7 @@ func helpLines() []string {
 	h := func(s string) string { return stSection.Render(s) }
 	return []string{
 		h("Keys"),
-		"  tab / shift+tab / 1-5    switch view         j k / pgup pgdn / g G   move",
+		"  tab / shift+tab / 1-6    switch view         j k / pgup pgdn / g G   move",
 		"  s   cycle sort           d   cycle direction filter      i   inbound only",
 		"  /   search (esc clears)  enter   detail panel (Flows, Hosts) or decode tree (Packets)",
 		"  t   timeline of the selected flow (Flows)    p   pause display    r   reset counters    q   quit",
@@ -290,6 +290,7 @@ func helpLines() []string {
 		"  Packets   every captured frame, newest first; enter shows it field by field",
 		"  Stats     bandwidth over the last minute and bytes by protocol, port, process, country, organisation",
 		"  Notices   things worth a look: new countries, inbound connections from the internet, port scans, ARP changes",
+		"  Map       this machine, the LAN devices, the router, and each router on the path to the internet; u re-runs the trace",
 		"",
 		h("Columns"),
 		"  DIR       in = sent to this machine, out = sent by it, other = overheard (broadcast, multicast, mirrored)",

@@ -17,13 +17,15 @@ const (
 
 // Agg owns all counters. The capture goroutine writes, the UI snapshots.
 type Agg struct {
-	mu    sync.Mutex
-	local map[netip.Addr]bool
-	bcast map[netip.Addr]bool
-	flows map[FlowKey]*Flow
-	hosts map[netip.Addr]*Host
-	names map[netip.Addr]string // DNS-learned: address -> queried name
-	arp   map[netip.Addr]string // address -> MAC claimed in ARP
+	mu       sync.Mutex
+	local    map[netip.Addr]bool
+	bcast    map[netip.Addr]bool
+	flows    map[FlowKey]*Flow
+	hosts    map[netip.Addr]*Host
+	names    map[netip.Addr]string // DNS-learned: address -> queried name
+	arp      map[netip.Addr]string // address -> MAC claimed in ARP
+	macs     map[string]*MacInfo
+	lanNames map[netip.Addr]string // mDNS: address -> name.local
 
 	recent []Packet // ring buffer of the newest packets
 	head   int
@@ -40,14 +42,16 @@ type Agg struct {
 
 func NewAgg(onNew func(netip.Addr)) *Agg {
 	a := &Agg{
-		local:  map[netip.Addr]bool{},
-		bcast:  map[netip.Addr]bool{},
-		flows:  map[FlowKey]*Flow{},
-		hosts:  map[netip.Addr]*Host{},
-		names:  map[netip.Addr]string{},
-		arp:    map[netip.Addr]string{},
-		recent: make([]Packet, recentCap),
-		onNew:  onNew,
+		local:    map[netip.Addr]bool{},
+		bcast:    map[netip.Addr]bool{},
+		flows:    map[FlowKey]*Flow{},
+		hosts:    map[netip.Addr]*Host{},
+		names:    map[netip.Addr]string{},
+		arp:      map[netip.Addr]string{},
+		macs:     map[string]*MacInfo{},
+		lanNames: map[netip.Addr]string{},
+		recent:   make([]Packet, recentCap),
+		onNew:    onNew,
 	}
 	a.stats.Start = time.Now()
 	a.loadLocalAddrs()
@@ -149,6 +153,8 @@ func (a *Agg) add(p Packet) (newRemote netip.Addr) {
 		a.stats.BytesOther += n
 		b.In += n
 	}
+
+	a.trackMACs(p, n)
 
 	// DNS answers teach us names for addresses we will see shortly.
 	if p.DNS != nil {
@@ -258,6 +264,73 @@ func (a *Agg) add(p Packet) (newRemote netip.Addr) {
 	return newRemote
 }
 
+const macCap = 4096
+
+// lanAddr reports whether an address can belong to a device on the local segment.
+func lanAddr(ip netip.Addr) bool {
+	return ip.IsValid() && !ip.IsUnspecified() && (ip.IsPrivate() || ip.IsLinkLocalUnicast())
+}
+
+func unicastMAC(mac string) bool {
+	return mac != "" && mac != "ff:ff:ff:ff:ff:ff" && mac != "00:00:00:00:00:00" && !isGroupMAC(mac)
+}
+
+// isGroupMAC is true for multicast and broadcast hardware addresses (low bit of the first byte).
+func isGroupMAC(mac string) bool {
+	if len(mac) < 2 {
+		return false
+	}
+	var b byte
+	fmt.Sscanf(mac[:2], "%02x", &b)
+	return b&1 == 1
+}
+
+func (a *Agg) macEntry(mac string) *MacInfo {
+	mi := a.macs[mac]
+	if mi == nil {
+		if len(a.macs) >= macCap {
+			return nil
+		}
+		mi = &MacInfo{MAC: mac, IPs: map[netip.Addr]time.Time{}}
+		a.macs[mac] = mi
+	}
+	return mi
+}
+
+// trackMACs ties hardware addresses to LAN addresses and counts bytes per device.
+func (a *Agg) trackMACs(p Packet, n uint64) {
+	if unicastMAC(p.SrcMAC) {
+		if mi := a.macEntry(p.SrcMAC); mi != nil {
+			mi.BytesFrom += n
+			mi.Last = p.Time
+			if lanAddr(p.Src) {
+				mi.IPs[p.Src] = p.Time
+			}
+		}
+	}
+	if unicastMAC(p.DstMAC) {
+		if mi := a.macEntry(p.DstMAC); mi != nil {
+			mi.BytesTo += n
+			if lanAddr(p.Dst) {
+				mi.IPs[p.Dst] = p.Time
+			}
+		}
+	}
+	for _, na := range p.LANName {
+		a.lanNames[na.Addr] = na.Name
+	}
+	if p.DHCP != nil && unicastMAC(p.DHCP.MAC) {
+		if mi := a.macEntry(p.DHCP.MAC); mi != nil {
+			if p.DHCP.Hostname != "" {
+				mi.Hostname = p.DHCP.Hostname
+			}
+			if p.DHCP.Vendor != "" {
+				mi.Vendor = p.DHCP.Vendor
+			}
+		}
+	}
+}
+
 // trackTCP records sequence bases and measures the handshake round trip.
 func (a *Agg) trackTCP(f *Flow, h *Host, p Packet, inbound bool) {
 	side := 0
@@ -329,6 +402,7 @@ func (a *Agg) Reset() {
 	a.flows = map[FlowKey]*Flow{}
 	a.hosts = map[netip.Addr]*Host{}
 	a.notices = nil
+	a.macs = map[string]*MacInfo{}
 	a.secs = [bucketCap]Bucket{}
 	a.head, a.n = 0, 0
 	a.stats = Stats{Start: time.Now()}
@@ -336,12 +410,14 @@ func (a *Agg) Reset() {
 
 // Snapshot returns copies safe for the UI goroutine to read.
 type Snapshot struct {
-	Flows   []Flow
-	Hosts   []Host
-	Packets []Packet // newest first
-	Buckets []Bucket // last 60 seconds, oldest first
-	Notices []Notice // newest first
-	Stats   Stats
+	Flows    []Flow
+	Hosts    []Host
+	Packets  []Packet // newest first
+	Buckets  []Bucket // last 60 seconds, oldest first
+	Notices  []Notice // newest first
+	Macs     []MacInfo
+	LANNames map[netip.Addr]string
+	Stats    Stats
 }
 
 func (a *Agg) Snapshot() Snapshot {
@@ -376,6 +452,18 @@ func (a *Agg) Snapshot() Snapshot {
 		if b := a.secs[sec%bucketCap]; b.T == sec {
 			s.Buckets[i] = b
 		}
+	}
+	for _, mi := range a.macs {
+		c := *mi
+		c.IPs = make(map[netip.Addr]time.Time, len(mi.IPs))
+		for k, v := range mi.IPs {
+			c.IPs[k] = v
+		}
+		s.Macs = append(s.Macs, c)
+	}
+	s.LANNames = make(map[netip.Addr]string, len(a.lanNames))
+	for k, v := range a.lanNames {
+		s.LANNames[k] = v
 	}
 	s.Notices = make([]Notice, len(a.notices))
 	for i, n := range a.notices {

@@ -28,7 +28,7 @@ With no flags, `ears` captures on the interface that carries the default route.
 
 ## Views
 
-Five views, switched with `Tab` or `1` to `5`. Press `?` in the app for the
+Six views, switched with `Tab` or `1` to `6`. Press `?` in the app for the
 full key and column reference.
 
 | View    | One row per                  | What it adds                                                                       |
@@ -37,6 +37,7 @@ full key and column reference.
 | Hosts   | remote address               | totals, top ports, processes, best name, origin                                    |
 | Packets | captured frame, newest first | TCP flags, TLS server name, HTTP request, DNS; `Enter` decodes                     |
 | Stats   | (charts)                     | 60 s bandwidth sparklines, bytes by protocol, port, process, country, organisation |
+| Map     | (diagram)                    | the router, LAN devices, Wi-Fi link and every hop to the internet                  |
 | Notices | event                        | first traffic to a country, inbound connections, port scans, ARP changes           |
 
 Direction is relative to this machine. `in` is addressed to one of its IPs,
@@ -78,6 +79,34 @@ first 2048 bytes of each frame are kept.
 `t` on a TCP flow lists its packets in order with direction arrows, flags,
 payload size and relative sequence numbers. The handshake, the round trip and
 the close are labelled. Each flow records its first 200 packets.
+
+### Map
+
+The Map tab draws the network this machine sits on, top to bottom: the
+internet, each router on the way out, your router, the link to it, and every
+device on the LAN. Markers move along the path while traffic flows, upward for
+traffic leaving and downward for traffic arriving.
+
+| Part        | Where it comes from                                                       |
+| ----------- | ------------------------------------------------------------------------- |
+| Router      | the default route in `/proc/net/route`                                    |
+| Devices     | the kernel ARP table, plus any device the capture saw on the LAN          |
+| Makers      | the IEEE vendor list in `/usr/share/hwdata/oui.txt` (package `hwdata`)    |
+| Names       | DHCP hostnames and mDNS `.local` names seen in the capture, reverse DNS   |
+| Wi-Fi       | `iwctl`, else `nmcli`, else just the signal from `/proc/net/wireless`     |
+| Path out    | `tracepath` to 1.1.1.1, run once when the tab first opens; `u` reruns it  |
+| Tailscale   | `tailscale status`, when Tailscale is running                             |
+
+A device shows up once it has talked recently enough to be in the ARP table,
+so a phone asleep on the network can be missing. Phones and laptops often use
+a randomised MAC, shown as "private MAC", which hides the maker. Names fill in
+as devices announce themselves, so a map left open for a few minutes is more
+complete than a fresh one.
+
+The trace sends a few dozen small UDP probes with rising TTLs; `-trace` picks
+another target and `-no-trace` stops it running on its own. Routers past a
+certain point often ignore probes, and the trace stops after three silent
+hops. Press `a` on the map to have Claude explain the whole picture.
 
 ### Notices
 
