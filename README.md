@@ -3,6 +3,11 @@
 A terminal traffic monitor. It captures the packets reaching one network
 interface and shows who is talking to this machine, from where.
 
+![ears replaying a made-up capture: flows, hosts, packets, DNS, stats, notices and the map](demo.gif)
+
+The recording replays `testdata/demo.pcap`, made-up traffic on a documentation
+network. `vhs demo.tape` re-records it.
+
 ## Run
 
 ```bash
